@@ -1,134 +1,193 @@
 # ai-note-pair Specification
 
+Status: working draft. Product discussion precedes an implementation plan.
+
 ## Vision
 
-`ai-note-pair` is a framework enabling two AI agents to work collaboratively as a distributed pair programming team. One AI acts as the **Main/Engineer** (architectural decisions, specifications), while the other acts as the **Dev/Hands** (implementation, code execution). Communication happens through discrete "notes" (messages) stored in a persistent, room-based system.
+`ai-note-pair` is a local, persistent chat CLI for AI agents working on the same machine. Agents exchange discrete notes in shared rooms containing two or more agents.
 
-The metaphor: Two colleagues working in the same office but at distant desks, shouting questions and answers to each other.
+The application stores and routes messages and tracks what each agent has read. Agents run independently and use the CLI to communicate. There are no enforced roles or turns, model execution, provider endpoints, API keys, or global configuration file.
 
 ## Architecture
 
-### Global Structure
+### Storage Structure
 
-```
+```text
 ~/.config/ai-note-pair/
-├── config.json           # Global configuration (endpoints, API keys, etc.)
-├── rooms/                # Active conversation rooms
+├── rooms/
 │   └── <room-name>/
-│       ├── ai-note-pair.db    # SQLite database (schema versioned via PRAGMA)
-│       └── attachments/       # Shared files between agents
-└── archived/             # Archived rooms (name reuse possible)
-    └── <room-name>/
+│       ├── ai-note-pair.db
+│       └── attachments/
+└── archived/
+    └── <room-name>-<YYYYMMDDhhmmss>/
         ├── ai-note-pair.db
         └── attachments/
 ```
 
+All participants access the same local filesystem. Remote agents, Docker deployments, and cloud synchronization are outside the intended scope.
+
 ### Room Lifecycle
 
-1. **Create**: Any AI can initialize a room with `ai-note-pair create-room --name <room-name>`
-2. **Active**: Agents exchange messages via `ai-note-pair send`
-3. **Read**: Agents retrieve conversation history via `ai-note-pair read`
-4. **Archive**: Room moved to `archived/` via `ai-note-pair archive --room <room-name>`
+1. **Create**: Initialize a named room.
+2. **Active**: Agents send messages and synchronize unread conversation context.
+3. **Archive**: Move the database and attachments to a timestamp-suffixed directory, freeing the active room name for reuse.
+
+Archive example: `projectx-20261003203715`.
+
+If an archive destination already exists, preserve the existing archive. The collision policy and timestamp timezone remain to be defined.
+
+### Agent Identity and Membership
+
+- Identity is permissive: the supplied agent name is the identity used for the operation.
+- Repeated use of the same name is allowed and refers to the same logical agent in that room.
+- There is no authentication, name ownership verification, required model metadata, or model/role naming convention.
+- Membership is scoped to a room and must be persisted so the application can determine recipients.
+- A successful explicitly addressed send automatically registers both the sender and the named recipient if they are not already known in the room. Registration and message insertion happen together.
+- A recipient can therefore exist before sending any messages. Its name is available for the intended agent to discover through `info --room <room-name>`; this is a conversational reservation, not exclusive ownership.
+- No explicit join command is required for this flow.
+
+### Message Routing
+
+- With exactly two room participants, an omitted recipient is inferred as the participant other than the sender.
+- With more than two participants, an explicit recipient is required.
+- A message can target one named agent or **all** participants.
+- Proposed CLI syntax: `--to <agent-name>` for direct messages and `--to all` for broadcasts.
+- The broadcast token must be unambiguous with agent names; its reservation or alternative syntax remains open.
+- Explicitly naming an unknown direct recipient registers that participant. Recipient inference uses the resulting membership, including the sender: a new sender joining an existing two-agent room makes it a three-agent room and must specify a recipient.
+- A broadcast does not register an agent named after the broadcast token.
+- Routing with fewer than two participants and no explicit direct recipient remains open.
+
+### Room Information
+
+```bash
+ai-note-pair info --room projectx [--json]
+```
+
+Inspect room data without consuming messages or changing membership/read state. Include:
+
+- Room name, creation time, and last modification time.
+- Total message count and participant count.
+- Each known participant's name and sent-message count, including participants with zero sent messages.
+
+The sent-message count is based on the sender identity; each broadcast counts as one sent message. Counts can be derived from stored messages.
+
+Example after Alice sends the first message to Bob:
+
+```text
+Room: projectx
+Participants: 2
+Messages: 1
+
+Agent    Messages sent
+alice    1
+bob      0
+```
+
+Bob can inspect this information to discover the name already registered for him, then use `--name bob` to read or send. The example abbreviates the full output by omitting timestamps.
+
+### Read as Synchronization
+
+```bash
+ai-note-pair read --room <room-name> --name <agent-name>
+```
+
+The application owns unread tracking; agents do not need to maintain timestamps or message cursors themselves.
+
+1. Load the requesting agent's last read message ID for this room; the initial cursor is `0`.
+2. Return every message with an ID greater than that cursor, in ascending ID order, through a fixed upper ID for this read.
+3. Advance only that agent's cursor to the highest returned message ID and record `read_at`.
+4. If there are no messages after the cursor, return an empty result without advancing it.
+
+Example: if agent `alice` last read ID `4` and the room now contains messages through ID `9`, return IDs `5` through `9`, even if all those messages are addressed to other agents. Alice's cursor becomes `9`; the other agents' cursors are unchanged.
+
+Read state is per agent. Reading a broadcast as one agent must not mark it read for other agents. Message IDs determine synchronization order; timestamps record when events happened.
+
+All messages after the cursor are included, regardless of sender or recipient, including the reader's own messages and broadcasts. Sending a message does not advance the sender's read cursor, since that could skip intervening conversation.
+
+Recipients indicate whom a message addresses; they neither restrict visibility nor determine which messages trigger a read. The same synchronization behavior applies to two-agent and larger rooms.
+
+An agent's first read returns the full room history from cursor `0`, including messages sent before that agent was registered. A broadcast follows the same read rules as any other message.
+
+Messages arriving beyond the fixed upper ID remain eligible for a later read. Output/marking failure behavior remains to be defined.
 
 ### Database Schema (SQLite)
 
-Each room has a single `ai-note-pair.db` with:
+The following representation uses one read cursor per agent in each room.
 
-- **messages table**: Stores all exchanges between agents
-  - `id` (INTEGER PRIMARY KEY)
-  - `timestamp` (DATETIME)
-  - `sender_name` (TEXT, agent nickname in slug format)
-  - `sender_model` (TEXT, e.g., "gpt-4", "claude-3", "llama-2")
-  - `content` (TEXT, supports large texts)
-  - `attachment_paths` (JSON array or TEXT list of file references)
+- **agents**:
+  - `name`: Room participant identity, unique within the room.
+  - `last_read_message_id`: Last message ID returned by a read, initially `0`.
+  - `read_at`: Time the cursor last advanced, initially NULL.
+- **messages**:
+  - `id`: INTEGER PRIMARY KEY, ordered within the room.
+  - `timestamp`: Message creation time.
+  - `sender_name`: Supplied sender identity.
+  - `recipient_name`: Direct recipient or an unambiguous broadcast marker.
+  - `content`: TEXT, supporting large messages.
+  - `attachment_paths`: JSON array of room-relative attachment references.
+- **metadata**: Room metadata stored as key/value pairs, including creation and modification times.
 
-- **metadata table**: Room information
-  - `key` (TEXT PRIMARY KEY, e.g., "created_at", "last_modified")
-  - `value` (TEXT)
+Per-agent cursors track independent consumption of the shared history without needing per-message read receipts.
 
-**Schema Versioning**: Use `PRAGMA user_version` to track schema evolution. On first run, set version to 1.
+Use `PRAGMA user_version` for schema versioning, starting at version `1`.
 
-### Agent Identification
+## Message Content and CLI Output
 
-Each agent self-identifies with:
-- **name** (slug format, includes model reference): e.g., `gpt4-main`, `claude3-hands`, `llama2-coder`
-- **model** (metadata): e.g., `gpt-4`, `claude-3-opus`, `llama-2-70b`
+Proposed send interface:
 
-Nickname format: `{model}-{role}` (lowercase, hyphens only)
-
-First agent to `send` in a room auto-registers. Subsequent agents with the same name are rejected (name collision prevention).
-
-### Message Exchange
-
-**Send**:
 ```bash
-ai-note-pair send --room <room-name> --name <agent-nickname> --message <text> [--attachment <file-path>]
+ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --message <text>
+ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --message-file <path>
+ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --message-file -
 ```
 
-- Inserts row into messages table
-- Optionally stores attachments in `attachments/` folder
-- Stores relative file paths in `attachment_paths`
-
-**Read**:
-```bash
-ai-note-pair read --room <room-name> [--since <timestamp>] [--from <agent-name>]
-```
-
-- Retrieves messages (with optional filtering)
-- Returns in chronological order
-- Includes attachment metadata
-
-### Global Configuration
-
-`~/.config/ai-note-pair/config.json`:
-
-```json
-{
-  "agents": {
-    "gpt4-main": {
-      "model": "gpt-4",
-      "endpoint": "https://api.openai.com/v1",
-      "api_key": "sk-..."
-    },
-    "claude3-hands": {
-      "model": "claude-3-opus",
-      "endpoint": "https://api.anthropic.com",
-      "api_key": "..."
-    }
-  }
-}
-```
+- Accept inline text, a UTF-8 file, or stdin (`--message-file -`).
+- Select exactly one message input source.
+- Allow repeatable `--attachment <path>` options; copy attachments into the room and store relative references.
+- Include attachment metadata in read results.
+- Support human-readable output and machine-readable JSON (`--json`).
+- Preserve message IDs and sender/recipient information in read results.
 
 ## Stack
 
-- **Language**: Python
-- **Package Manager**: `uv` (fast, dependency-locked)
-- **CLI Framework**: Click or Typer (modern, intuitive)
-- **Database**: SQLite3 (standard library)
-- **Config**: JSON (stdlib json module)
-- **Distribution**: Installable via `pip` (after building wheel), symlinked/aliased as global `ai-note-pair` command
+- **Language**: Python.
+- **Package manager**: `uv`.
+- **CLI framework**: Click or Typer; selection remains open.
+- **Database**: SQLite via the Python standard library.
+- **JSON**: Python standard library for attachment references and structured output.
+- **Distribution**: Installable Python package exposing the global `ai-note-pair` command through a console entry point.
 
-## Implementation Notes
+## Implementation Constraints
 
-- All code, commands, and user-facing text in English
-- Final deliverable: CLI executable accessible globally as `ai-note-pair`
-- Rooms are isolated and versioned; schema changes tracked via `PRAGMA user_version`
-- Attachments stay local to rooms; no cloud sync (keep it simple)
-- Large text support: SQLite TEXT type handles MB-scale messages
-- Error handling: Clear messages for missing rooms, name collisions, corrupted DBs
+- All code, commands, and user-facing CLI text are in English.
+- Rooms and their read state are isolated.
+- Attachments remain local to their rooms and move with archived rooms.
+- Support MB-scale message content.
+- Concurrent local CLI invocations must preserve consistent routing and read state.
+- Provide clear errors for missing rooms, invalid recipient selection, attachment failures, and corrupted databases.
 
 ## Commands (MVP)
 
-- `ai-note-pair create-room --name <room-name>` — Initialize a new room
-- `ai-note-pair send --room <room-name> --name <agent-nickname> --message <text> [--attachment <path>]` — Send a message
-- `ai-note-pair read --room <room-name> [--since <timestamp>] [--from <agent-name>]` — Retrieve messages
-- `ai-note-pair archive --room <room-name>` — Archive a room (frees the name)
-- `ai-note-pair list-rooms [--archived]` — List active or archived rooms
+- `create-room --name <room-name>`: Initialize an empty room.
+- `info --room <room-name> [--json]`: Show room metadata, participants, and sent-message counts without changing read state.
+- `send --room <room-name> --name <agent-name> [--to <recipient>] ...`: Send a direct or broadcast message.
+- `read --room <room-name> --name <agent-name>`: Return unread conversation context and update that agent's read state.
+- `archive --room <room-name>`: Archive a room with a timestamp suffix.
+- `list-rooms [--archived]`: List active or archived rooms.
+
+Message commands support the content and output options above. Participants are registered implicitly through message sending.
+
+## Open Questions
+
+- **First broadcast**: Should a broadcast be allowed when there are no other known participants? A first direct message already establishes the sender and recipient.
+- **Concurrent reads**: Define how simultaneous reads using the same agent identity behave; cursor updates must never move backward.
+- **Unknown reader**: Should reading with an unregistered name register that participant, or require prior registration through a send?
+- **Read delivery failures**: Define when read state advances relative to output delivery and how an agent can recover or reread history after a failure.
+- **Archive naming**: Choose the timestamp timezone and resolve multiple archives of the same room name within one second.
 
 ## Future Extensions
 
-- Multi-agent rooms (>2 agents)
-- Message reactions/annotations
-- Room templates or initialization scripts
-- Export to markdown or JSON
-- Web UI for monitoring
+- Message reactions or annotations.
+- Room templates or initialization scripts.
+- Conversation export to Markdown or JSON.
+- Web UI for monitoring.
