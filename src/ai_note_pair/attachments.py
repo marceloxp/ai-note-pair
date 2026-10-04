@@ -34,6 +34,10 @@ def copy_attachment(room: Path, source: Path) -> str:
             descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except FileExistsError:
             continue
+        except OSError as exc:
+            raise AiNotePairError(
+                f"Could not copy attachment {os.fspath(source)!r}: {exc.strerror or exc}"
+            ) from exc
         try:
             with os.fdopen(descriptor, "wb") as outgoing, source.open("rb") as incoming:
                 shutil.copyfileobj(incoming, outgoing)

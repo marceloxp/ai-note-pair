@@ -214,3 +214,108 @@ def test_room_symlink_cannot_escape_storage(
     created = _invoke(runner, ["create-room", "--name", "projectx"], cli_env)
     assert created.exit_code == 1
     assert (rooms / "projectx").is_symlink()
+
+
+def test_legacy_room_without_instance_id_keeps_messages_and_cursors(
+    runner: CliRunner, storage_home: Path, cli_env: dict[str, str]
+) -> None:
+    room = storage_home / "rooms" / "projectx"
+    (room / "attachments").mkdir(parents=True)
+    database = room / DATABASE_FILENAME
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE agents (
+            name TEXT PRIMARY KEY,
+            last_read_message_id INTEGER NOT NULL DEFAULT 0,
+            read_at TEXT
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            sender_name TEXT NOT NULL,
+            recipient_name TEXT NOT NULL,
+            content TEXT NOT NULL,
+            attachment_paths TEXT NOT NULL DEFAULT '[]'
+        );
+        INSERT INTO metadata (key, value) VALUES ('created_at', '2026-01-01T00:00:00Z');
+        INSERT INTO metadata (key, value) VALUES ('updated_at', '2026-01-01T00:00:00Z');
+        INSERT INTO agents (name, last_read_message_id, read_at)
+        VALUES ('alice', 0, NULL);
+        INSERT INTO agents (name, last_read_message_id, read_at)
+        VALUES ('bob', 1, '2026-01-02T00:00:00Z');
+        INSERT INTO messages (
+            timestamp, sender_name, recipient_name, content, attachment_paths
+        ) VALUES ('2026-01-01T00:00:01Z', 'alice', 'bob', 'legacy note', '[]');
+        """
+    )
+    connection.execute("PRAGMA user_version = 1")
+    connection.commit()
+    connection.close()
+
+    read = _invoke(runner, ["read", "--room", "projectx", "--name", "alice", "--json"], cli_env)
+    assert read.exit_code == 0, read.stderr
+    assert "legacy note" in read.stdout
+    assert "Traceback" not in read.stderr
+
+    connection = sqlite3.connect(database)
+    try:
+        instance_id = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'instance_id'"
+        ).fetchone()[0]
+        content = connection.execute("SELECT content FROM messages").fetchone()[0]
+        bob = connection.execute(
+            "SELECT last_read_message_id, read_at FROM agents WHERE name = 'bob'"
+        ).fetchone()
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        connection.close()
+    assert instance_id
+    assert content == "legacy note"
+    assert bob == (1, "2026-01-02T00:00:00Z")
+    assert version == 1
+    assert _cursor(database, "alice") == 1
+
+
+def test_unwritable_attachment_directory_is_a_clear_error(
+    runner: CliRunner, tmp_path: Path, storage_home: Path, cli_env: dict[str, str]
+) -> None:
+    _create(runner, cli_env)
+    source = tmp_path / "note.txt"
+    source.write_text("payload", encoding="utf-8")
+    attachments = storage_home / "rooms" / "projectx" / "attachments"
+    attachments.chmod(0o555)
+    try:
+        result = _invoke(
+            runner,
+            [
+                "send",
+                "--room",
+                "projectx",
+                "--name",
+                "alice",
+                "--to",
+                "bob",
+                "--message",
+                "with file",
+                "--attachment",
+                str(source),
+            ],
+            cli_env,
+        )
+    finally:
+        attachments.chmod(0o755)
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "Could not copy attachment" in result.stderr
+    assert "Permission denied" in result.stderr
+    assert "Traceback" not in result.stderr
+    database = storage_home / "rooms" / "projectx" / DATABASE_FILENAME
+    connection = sqlite3.connect(database)
+    try:
+        count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 0
+    assert list(attachments.iterdir()) == []

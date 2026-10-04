@@ -86,6 +86,25 @@ def initialize_database(database: Path) -> None:
         connection.commit()
 
 
+def ensure_instance_id(connection: sqlite3.Connection) -> None:
+    """Assign instance_id on a version 1 room created before that field existed."""
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        row = connection.execute("SELECT value FROM metadata WHERE key = 'instance_id'").fetchone()
+        if row is None:
+            connection.execute(
+                "INSERT INTO metadata (key, value) VALUES ('instance_id', ?)",
+                (uuid.uuid4().hex,),
+            )
+        connection.commit()
+    except sqlite3.Error:
+        try:
+            connection.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+
+
 def schema_version(connection: sqlite3.Connection) -> int:
     row = connection.execute("PRAGMA user_version").fetchone()
     return int(row[0])

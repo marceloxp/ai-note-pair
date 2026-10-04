@@ -17,6 +17,7 @@ from ai_note_pair.storage import (
     SCHEMA_VERSION,
     archived_dir,
     connect,
+    ensure_instance_id,
     schema_version,
     utc_now,
 )
@@ -438,6 +439,14 @@ def _open_room(database: Path) -> sqlite3.Connection:
             f"Unsupported room schema version {version}. "
             f"This build supports version {SCHEMA_VERSION}."
         )
+    try:
+        ensure_instance_id(connection)
+    except sqlite3.Error as exc:
+        connection.close()
+        text = str(exc).lower()
+        if "locked" in text or "busy" in text:
+            raise _database_failure(exc) from exc
+        raise AiNotePairError(f"Could not open room database '{database}': {exc}") from exc
     return connection
 
 
