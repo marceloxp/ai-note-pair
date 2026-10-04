@@ -19,7 +19,11 @@ def copy_attachment(room: Path, source: Path) -> str:
         raise AiNotePairError(f"Attachment {os.fspath(source)!r} has an invalid file name.")
 
     destination_dir = room / ATTACHMENTS_DIRNAME
-    if not destination_dir.is_dir():
+    if (
+        destination_dir.is_symlink()
+        or not destination_dir.is_dir()
+        or destination_dir.resolve().parent != room.resolve()
+    ):
         raise AiNotePairError(
             f"Room attachment directory {os.fspath(destination_dir)!r} is not available."
         )

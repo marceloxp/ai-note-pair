@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -63,7 +64,7 @@ def connect(database: Path) -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.isolation_level = None
     connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 5000")
+    connection.execute("PRAGMA busy_timeout = 1000")
     connection.execute("PRAGMA journal_mode = WAL")
     return connection
 
@@ -78,6 +79,7 @@ def initialize_database(database: Path) -> None:
             (
                 ("created_at", created_at),
                 ("updated_at", created_at),
+                ("instance_id", uuid.uuid4().hex),
             ),
         )
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

@@ -11,10 +11,11 @@ from pathlib import Path
 
 from ai_note_pair.attachments import copy_attachment, discard_attachments
 from ai_note_pair.errors import AiNotePairError
-from ai_note_pair.rooms import room_directory
+from ai_note_pair.rooms import exclusive_room, room_directory
 from ai_note_pair.storage import (
     DATABASE_FILENAME,
     SCHEMA_VERSION,
+    archived_dir,
     connect,
     schema_version,
     utc_now,
@@ -66,6 +67,7 @@ class ChatMessage:
 class UnreadBatch:
     room: str
     reader: str
+    instance_id: str
     previous_cursor: int
     messages: tuple[ChatMessage, ...]
 
@@ -110,24 +112,30 @@ def publish_message(
     home: Path | None = None,
     attachment_sources: list[Path] | None = None,
 ) -> SentMessage:
-    """Copy attachments, then store the message. A failed send removes those copies."""
+    """Copy attachments, then store the message on the same room instance."""
+    validate_agent_name(sender, role="sender")
+    if recipient is not None and recipient != BROADCAST:
+        validate_agent_name(recipient, role="recipient")
     room_path = room_directory(room, home)
-    _require_database(room, home)
+    database = _require_database(room, home)
     copied: list[str] = []
-    try:
-        for source in attachment_sources or []:
-            copied.append(copy_attachment(room_path, source))
-        return send_message(
-            room,
-            sender,
-            content,
-            recipient,
-            home,
-            attachment_paths=copied,
-        )
-    except Exception:
-        discard_attachments(room_path, copied)
-        raise
+    with exclusive_room(room_path):
+        database = _require_database(room, home)
+        try:
+            for source in attachment_sources or []:
+                copied.append(copy_attachment(room_path, source))
+            return send_message(
+                room,
+                sender,
+                content,
+                recipient,
+                home,
+                attachment_paths=copied,
+                database=database,
+            )
+        except Exception:
+            discard_attachments(room_path, copied)
+            raise
 
 
 def send_message(
@@ -137,17 +145,19 @@ def send_message(
     recipient: str | None = None,
     home: Path | None = None,
     attachment_paths: list[str] | None = None,
+    database: Path | None = None,
 ) -> SentMessage:
     """Store one message and register any new direct participants atomically."""
     validate_agent_name(sender, role="sender")
     if recipient is not None and recipient != BROADCAST:
         validate_agent_name(recipient, role="recipient")
 
-    database = _require_database(room, home)
+    if database is None:
+        database = _require_database(room, home)
     connection = _open_room(database)
     try:
-        connection.execute("BEGIN IMMEDIATE")
         try:
+            connection.execute("BEGIN IMMEDIATE")
             resolved = _resolve_recipient(connection, sender, recipient)
             _ensure_agent(connection, sender)
             if resolved != BROADCAST:
@@ -167,10 +177,13 @@ def send_message(
                 "UPDATE metadata SET value = ? WHERE key = 'updated_at'",
                 (timestamp,),
             )
-        except Exception:
-            connection.rollback()
+            connection.commit()
+        except AiNotePairError:
+            _rollback(connection)
             raise
-        connection.commit()
+        except sqlite3.Error as exc:
+            _rollback(connection)
+            raise _database_failure(exc) from exc
     finally:
         connection.close()
 
@@ -189,8 +202,9 @@ def collect_unread(room: str, reader: str, home: Path | None = None) -> UnreadBa
     database = _require_database(room, home)
     connection = _open_room(database)
     try:
-        connection.execute("BEGIN IMMEDIATE")
         try:
+            connection.execute("BEGIN IMMEDIATE")
+            instance_id = _metadata(connection, "instance_id")
             row = connection.execute(
                 "SELECT last_read_message_id FROM agents WHERE name = ?",
                 (reader,),
@@ -213,15 +227,19 @@ def collect_unread(room: str, reader: str, home: Path | None = None) -> UnreadBa
                 """,
                 (previous, upper),
             ).fetchall()
-        except Exception:
             connection.rollback()
+        except AiNotePairError:
+            _rollback(connection)
             raise
-        connection.rollback()
+        except sqlite3.Error as exc:
+            _rollback(connection)
+            raise _database_failure(exc) from exc
     finally:
         connection.close()
     return UnreadBatch(
         room=room,
         reader=reader,
+        instance_id=instance_id,
         previous_cursor=previous,
         messages=tuple(_chat_message(row) for row in rows),
     )
@@ -232,11 +250,16 @@ def acknowledge_read(batch: UnreadBatch, home: Path | None = None) -> None:
     if not batch.messages:
         return
     delivered_id = batch.messages[-1].id
-    database = _require_database(batch.room, home)
+    database = _database_for_instance(batch.room, batch.instance_id, home)
     connection = _open_room(database)
     try:
-        connection.execute("BEGIN IMMEDIATE")
         try:
+            connection.execute("BEGIN IMMEDIATE")
+            if _metadata(connection, "instance_id") != batch.instance_id:
+                raise AiNotePairError(
+                    f"Room {batch.room!r} changed before the read could be recorded. "
+                    "The replacement room was left unchanged."
+                )
             connection.execute(
                 """
                 UPDATE agents
@@ -245,10 +268,13 @@ def acknowledge_read(batch: UnreadBatch, home: Path | None = None) -> None:
                 """,
                 (delivered_id, utc_now(), batch.reader, delivered_id),
             )
-        except Exception:
-            connection.rollback()
+            connection.commit()
+        except AiNotePairError:
+            _rollback(connection)
             raise
-        connection.commit()
+        except sqlite3.Error as exc:
+            _rollback(connection)
+            raise _database_failure(exc) from exc
     finally:
         connection.close()
 
@@ -258,18 +284,21 @@ def room_info(room: str, home: Path | None = None) -> RoomInfo:
     database = _require_database(room, home)
     connection = _open_room(database)
     try:
-        created_at = _metadata(connection, "created_at")
-        updated_at = _metadata(connection, "updated_at")
-        message_count = int(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-        rows = connection.execute(
-            """
-            SELECT agents.name AS name, COUNT(messages.id) AS messages_sent
-            FROM agents
-            LEFT JOIN messages ON messages.sender_name = agents.name
-            GROUP BY agents.name
-            ORDER BY agents.name
-            """
-        ).fetchall()
+        try:
+            created_at = _metadata(connection, "created_at")
+            updated_at = _metadata(connection, "updated_at")
+            message_count = int(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+            rows = connection.execute(
+                """
+                SELECT agents.name AS name, COUNT(messages.id) AS messages_sent
+                FROM agents
+                LEFT JOIN messages ON messages.sender_name = agents.name
+                GROUP BY agents.name
+                ORDER BY agents.name
+                """
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise _database_failure(exc) from exc
     finally:
         connection.close()
     agents = tuple(
@@ -328,10 +357,70 @@ def _ensure_agent(connection: sqlite3.Connection, name: str) -> None:
 
 
 def _require_database(room: str, home: Path | None) -> Path:
-    database = room_directory(room, home) / DATABASE_FILENAME
-    if not database.is_file():
+    directory = room_directory(room, home)
+    database = directory / DATABASE_FILENAME
+    if database.is_symlink() or not _database_is_inside(directory, database):
+        if database.is_symlink():
+            raise AiNotePairError(f"Room {room!r} points outside the storage directory.")
         raise AiNotePairError(f"Room {room!r} does not exist.")
     return database
+
+
+def _database_for_instance(room: str, instance_id: str, home: Path | None) -> Path:
+    """Find the database captured by a read, including after that room was archived."""
+    directory = room_directory(room, home)
+    active = directory / DATABASE_FILENAME
+    if _database_is_inside(directory, active) and _peek_instance_id(active) == instance_id:
+        return active
+    root = archived_dir(home)
+    if root.is_dir() and not root.is_symlink():
+        for entry in root.iterdir():
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            database = entry / DATABASE_FILENAME
+            if _database_is_inside(entry, database) and _peek_instance_id(database) == instance_id:
+                return database
+    raise AiNotePairError(
+        f"Room {room!r} changed before the read could be recorded. "
+        "The replacement room was left unchanged."
+    )
+
+
+def _database_is_inside(directory: Path, database: Path) -> bool:
+    if database.is_symlink() or not database.is_file():
+        return False
+    return database.resolve().parent == directory.resolve()
+
+
+def _peek_instance_id(database: Path) -> str | None:
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = connect(database)
+        row = connection.execute("SELECT value FROM metadata WHERE key = 'instance_id'").fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+    if row is None:
+        return None
+    return str(row[0])
+
+
+def _database_failure(exc: sqlite3.Error) -> AiNotePairError:
+    text = str(exc).lower()
+    if "locked" in text or "busy" in text:
+        return AiNotePairError(
+            "The room database is busy. Wait for the other command to finish and retry."
+        )
+    return AiNotePairError(f"Could not access the room database: {exc}")
+
+
+def _rollback(connection: sqlite3.Connection) -> None:
+    try:
+        connection.rollback()
+    except sqlite3.Error:
+        pass
 
 
 def _open_room(database: Path) -> sqlite3.Connection:

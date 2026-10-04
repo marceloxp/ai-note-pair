@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
 import re
 import shutil
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from ai_note_pair.errors import AiNotePairError
@@ -35,11 +39,49 @@ def room_directory(name: str, home: Path | None = None) -> Path:
     validate_room_name(name)
     root = rooms_dir(home)
     candidate = root / name
-    if candidate.parent != root:
+    if candidate.is_symlink():
+        raise AiNotePairError(
+            f"Room {name!r} is a symbolic link. "
+            "Room directories must stay inside the storage directory."
+        )
+    resolved_root = root.resolve()
+    resolved = candidate.resolve()
+    if resolved.parent != resolved_root or resolved.name != name:
         raise AiNotePairError(
             f"Invalid room name {name!r}. Room directories must stay inside the storage directory."
         )
     return candidate
+
+
+@contextmanager
+def exclusive_room(room: Path) -> Iterator[None]:
+    """Lock one room directory so send and archive cannot split that instance."""
+    if room.is_symlink() or not room.is_dir():
+        raise AiNotePairError(f"Room {room.name!r} does not exist.")
+    lock_path = room / ".room.lock"
+    try:
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        raise AiNotePairError(
+            f"Could not lock room {room.name!r}: {_os_error_message(exc)}"
+        ) from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if room.is_symlink() or not room.is_dir():
+            raise AiNotePairError(f"Room {room.name!r} does not exist.")
+        try:
+            current = lock_path.stat()
+        except OSError as exc:
+            raise AiNotePairError(f"Room {room.name!r} does not exist.") from exc
+        held = os.fstat(descriptor)
+        if (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+            raise AiNotePairError(
+                f"Room {room.name!r} changed while the command was waiting. Retry the command."
+            )
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def create_room(name: str, home: Path | None = None) -> Path:

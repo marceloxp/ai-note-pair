@@ -53,7 +53,7 @@ def test_create_room_persists_empty_schema(
         assert connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0] == 0
         metadata = dict(connection.execute("SELECT key, value FROM metadata"))
-    assert set(metadata) == {"created_at", "updated_at"}
+    assert set(metadata) == {"created_at", "updated_at", "instance_id"}
     assert metadata["created_at"].endswith("Z")
     assert metadata["updated_at"] == metadata["created_at"]
 

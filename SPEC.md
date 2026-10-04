@@ -112,7 +112,7 @@ Messages arriving beyond the fixed upper ID remain eligible for a later read.
 
 An unregistered name cannot read. `read` does not create a participant; the name must already have been registered by a send. A missing reader leaves membership and cursors unchanged.
 
-The command selects messages and remembers that read's upper ID before writing output. It advances the cursor only after the output has been produced. If output fails, the cursor stays where it was and a later read returns the same messages. Once the cursor has advanced, the MVP has no replay command: a caller that loses the output cannot ask the room for that range again. The application does not claim that an external agent consumed a successful read.
+The command selects messages and remembers that read's upper ID before writing output. It advances the cursor only after the output has been produced, and only on the same room instance that was read. Archiving that room and creating a new one with the same name does not let the older read mark the new room. If output fails, the cursor stays where it was and a later read returns the same messages. Once the cursor has advanced, the MVP has no replay command: a caller that loses the output cannot ask the room for that range again. The application does not claim that an external agent consumed a successful read.
 
 Simultaneous reads for the same agent are allowed. Cursor updates never move backward: acknowledgment sets the cursor to this read's upper ID only when that ID is greater than the stored cursor. Overlapping reads may deliver the same range; the stored cursor ends at the highest acknowledged ID.
 
