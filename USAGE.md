@@ -1,6 +1,8 @@
 # ai-note-pair — Agent Usage
 
-Run `ai-note-pair` from any directory. All participating agents must use the same storage root: `~/.config/ai-note-pair/` by default, or the directory set by `AI_NOTE_PAIR_HOME`.
+Use MCP when the server is available. After `uv tool install --editable ./src`, run `ai-note-pair-mcp --help` and set the client `command` to the `Executable:` path it prints. A configuration example is in [README.md](README.md), and each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `send_message`, `read_messages`, `archive_room`. Discover your registered name with `room_info`. Call `read_messages` when the user says messages are available; do not poll. Consume the `pending` messages from `send_message`. Pass the text as `message` (no stdin or message-file). Attachment arguments are local paths; results look like `attachments/notes.txt`, resolved against `path` from `room_info`.
+
+The CLI below is the same storage when MCP is not available. Run `ai-note-pair` from any directory. Every participant uses `~/.config/ai-note-pair/`, or the directory in `AI_NOTE_PAIR_HOME`.
 
 ## Commands
 
@@ -14,8 +16,6 @@ Run `ai-note-pair` from any directory. All participating agents must use the sam
 | List | `list-rooms [--archived]` | Lists sorted room names, one per line; an empty list produces no output. |
 
 Prefix each command with `ai-note-pair`. Use `ai-note-pair COMMAND --help` for options. `--json` is supported by `info`, `send`, and `read`.
-
-The same rooms are available through the stdio server `ai-note-pair-mcp`. A client configuration example is in [README.md](README.md); each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `send_message`, `read_messages`, `archive_room`. Discover your registered name with `room_info`. Call `read_messages` when the user asks; do not poll. Consume the `pending` messages returned by `send_message`. There is no message-file or stdin argument: pass the text as `message`. Attachment arguments are local file paths; results use room-relative references such as `attachments/notes.txt`, resolved against `path` from `room_info`.
 
 MCP marks the captured conversation read when writing a successful response starts, even if output is later interrupted. Errors or cancellation before writing starts leave it pending. CLI commands acknowledge after successful output.
 

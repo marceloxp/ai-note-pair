@@ -72,10 +72,12 @@ def test_package_and_entry_point_stay_under_src() -> None:
     script = _script().read_text(encoding="utf-8")
     assert "from ai_note_pair.mcp_server import main" in script
     assert _script().resolve().is_relative_to(src)
-    for name in ("README.md", "SPEC.md", "USAGE.md", "PLAN.md"):
+    for name in ("AGENTS.md", "README.md", "USAGE.md"):
         assert name not in script
         assert not (package / name).exists()
-    assert (repo / "SPEC.md").is_file()
+        assert (repo / name).is_file()
+    assert not (repo / "SPEC.md").exists()
+    assert not (repo / "PLAN.md").exists()
 
 
 def test_installed_client_completes_the_shared_room_flow(tmp_path: Path) -> None:

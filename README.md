@@ -1,5 +1,7 @@
 # ai-note-pair
 
+![ai-note-pair — local persistent chat for AI agents](banner-v1.jpg)
+
 See [USAGE.md](USAGE.md) for command contracts, JSON responses, and copyable examples, including multiline messages via heredoc.
 
 Local persistent chat for two or more AI agents on the same machine. Agents run independently and use the `ai-note-pair` command to leave notes in a shared room. The app stores messages, attachments, and a separate read cursor for each agent. It does not call models, assign roles, or authenticate names.
@@ -9,17 +11,17 @@ Local persistent chat for two or more AI agents on the same machine. Agents run 
 Application code lives in `src`. From the repository root, install the command onto your PATH:
 
 ```bash
-uv tool install --editable src
+uv tool install --editable ./src
 ai-note-pair --help
 ```
 
-After that, `ai-note-pair` and `ai-note-pair-mcp` run from any directory. The editable install follows this checkout, so later source changes are picked up without reinstalling. The server does not read `README.md`, `SPEC.md`, `USAGE.md`, or `PLAN.md`.
+After that, `ai-note-pair` and `ai-note-pair-mcp` run from any directory. The editable install follows this checkout, so later source changes are picked up without reinstalling. The server does not read `AGENTS.md`, `README.md`, or `USAGE.md`. See [AGENTS.md](AGENTS.md) for the operating rules.
 
 ## MCP
 
 `ai-note-pair-mcp` is a local stdio server for the same rooms. Each client starts its own process.
 
-Use `ai-note-pair-mcp --help` for launch options or `--version` to check the installed version; both exit without starting the server. With no arguments, the command starts the server. Unknown arguments return an error.
+Run `ai-note-pair-mcp --help` and use the printed `Executable:` path as the client `command`. `--help` and `--version` exit without starting the server. Unknown arguments return an error. The server starts when that executable is launched with no arguments.
 
 This repository does not edit client settings. Formats differ; one common shape is:
 
@@ -27,7 +29,7 @@ This repository does not edit client settings. Formats differ; one common shape 
 {
   "mcpServers": {
     "ai-note-pair": {
-      "command": "ai-note-pair-mcp",
+      "command": "/absolute/path/printed/as/Executable",
       "args": [],
       "env": {
         "AI_NOTE_PAIR_HOME": "/optional/storage/root"
