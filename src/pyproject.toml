@@ -1,0 +1,38 @@
+[project]
+name = "ai-note-pair"
+version = "0.1.0"
+description = "Local persistent chat CLI for AI agents on the same machine."
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.12",
+]
+
+[project.scripts]
+ai-note-pair = "ai_note_pair.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ai_note_pair"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["ai_note_pair", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ai_note_pair"]

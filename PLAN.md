@@ -122,9 +122,9 @@ Acceptance criteria:
 
 ## Completion Checklist
 
-- [ ] 1. Package foundation and room storage
-- [ ] 2. Message sending, participants, and room information
-- [ ] 3. Per-agent conversation synchronization
-- [ ] 4. Large message input and attachments
-- [ ] 5. Archiving and storage failure handling
-- [ ] 6. End-to-end validation and delivery
+- [x] 1. Package foundation and room storage
+- [x] 2. Message sending, participants, and room information
+- [x] 3. Per-agent conversation synchronization
+- [x] 4. Large message input and attachments
+- [x] 5. Archiving and storage failure handling
+- [x] 6. End-to-end validation and delivery

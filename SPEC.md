@@ -1,6 +1,6 @@
 # ai-note-pair Specification
 
-Status: working draft. Product discussion precedes an implementation plan.
+Status: MVP implemented. Normative behavior for the delivered CLI is described below.
 
 ## Vision
 
@@ -34,13 +34,14 @@ All participants access the same local filesystem. Remote agents, Docker deploym
 
 Archive example: `projectx-20261003203715`.
 
-If an archive destination already exists, preserve the existing archive. The collision policy and timestamp timezone remain to be defined.
+Archive names use a UTC timestamp: `<room-name>-<YYYYMMDDhhmmss>`. If that destination already exists, preserve it and store the new archive at the next free suffix, `<room-name>-<YYYYMMDDhhmmss>-2`, then `-3`, and so on.
 
 ### Agent Identity and Membership
 
 - Identity is permissive: the supplied agent name is the identity used for the operation.
 - Repeated use of the same name is allowed and refers to the same logical agent in that room.
 - There is no authentication, name ownership verification, required model metadata, or model/role naming convention.
+- The name `all` is reserved for broadcasts. It is rejected as a sender or as a direct recipient, so the broadcast token cannot collide with an agent name. Agent names are otherwise case-sensitive and use 1–64 characters: letters, digits, `_`, or `-`, starting with a letter or digit.
 - Membership is scoped to a room and must be persisted so the application can determine recipients.
 - A successful explicitly addressed send automatically registers both the sender and the named recipient if they are not already known in the room. Registration and message insertion happen together.
 - A recipient can therefore exist before sending any messages. Its name is available for the intended agent to discover through `info --room <room-name>`; this is a conversational reservation, not exclusive ownership.
@@ -51,11 +52,10 @@ If an archive destination already exists, preserve the existing archive. The col
 - With exactly two room participants, an omitted recipient is inferred as the participant other than the sender.
 - With more than two participants, an explicit recipient is required.
 - A message can target one named agent or **all** participants.
-- Proposed CLI syntax: `--to <agent-name>` for direct messages and `--to all` for broadcasts.
-- The broadcast token must be unambiguous with agent names; its reservation or alternative syntax remains open.
+- CLI syntax: `--to <agent-name>` for direct messages and `--to all` for broadcasts. The stored broadcast marker is `all`.
 - Explicitly naming an unknown direct recipient registers that participant. Recipient inference uses the resulting membership, including the sender: a new sender joining an existing two-agent room makes it a three-agent room and must specify a recipient.
-- A broadcast does not register an agent named after the broadcast token.
-- Routing with fewer than two participants and no explicit direct recipient remains open.
+- An omitted recipient is accepted only when that resulting membership is exactly two. With fewer than two participants, or with more than two, an explicit recipient is required.
+- A broadcast registers the sender when needed and does not register an agent named `all`. It is rejected when no other participant is already known; the first exchange that introduces a second participant is a direct message.
 
 ### Room Information
 
@@ -108,7 +108,13 @@ Recipients indicate whom a message addresses; they neither restrict visibility n
 
 An agent's first read returns the full room history from cursor `0`, including messages sent before that agent was registered. A broadcast follows the same read rules as any other message.
 
-Messages arriving beyond the fixed upper ID remain eligible for a later read. Output/marking failure behavior remains to be defined.
+Messages arriving beyond the fixed upper ID remain eligible for a later read.
+
+An unregistered name cannot read. `read` does not create a participant; the name must already have been registered by a send. A missing reader leaves membership and cursors unchanged.
+
+The command selects messages and remembers that read's upper ID before writing output. It advances the cursor only after the output has been produced. If output fails, the cursor stays where it was and a later read returns the same messages. Once the cursor has advanced, the MVP has no replay command: a caller that loses the output cannot ask the room for that range again. The application does not claim that an external agent consumed a successful read.
+
+Simultaneous reads for the same agent are allowed. Cursor updates never move backward: acknowledgment sets the cursor to this read's upper ID only when that ID is greater than the stored cursor. Overlapping reads may deliver the same range; the stored cursor ends at the highest acknowledged ID.
 
 ### Database Schema (SQLite)
 
@@ -133,7 +139,7 @@ Use `PRAGMA user_version` for schema versioning, starting at version `1`.
 
 ## Message Content and CLI Output
 
-Proposed send interface:
+Send interface:
 
 ```bash
 ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --message <text>
@@ -143,7 +149,7 @@ ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --me
 
 - Accept inline text, a UTF-8 file, or stdin (`--message-file -`).
 - Select exactly one message input source.
-- Allow repeatable `--attachment <path>` options; copy attachments into the room and store relative references.
+- Allow repeatable `--attachment <path>` options; copy attachments into the room and store relative references. If that filename already exists in the room, store the new copy under a numeric suffix (`notes.txt`, then `notes-2.txt`) and leave the earlier file unchanged.
 - Include attachment metadata in read results.
 - Support human-readable output and machine-readable JSON (`--json`).
 - Preserve message IDs and sender/recipient information in read results.
@@ -152,7 +158,7 @@ ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --me
 
 - **Language**: Python.
 - **Package manager**: `uv`.
-- **CLI framework**: Click or Typer; selection remains open.
+- **CLI framework**: Typer.
 - **Database**: SQLite via the Python standard library.
 - **JSON**: Python standard library for attachment references and structured output.
 - **Distribution**: Installable Python package exposing the global `ai-note-pair` command through a console entry point.
@@ -176,14 +182,6 @@ ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --me
 - `list-rooms [--archived]`: List active or archived rooms.
 
 Message commands support the content and output options above. Participants are registered implicitly through message sending.
-
-## Open Questions
-
-- **First broadcast**: Should a broadcast be allowed when there are no other known participants? A first direct message already establishes the sender and recipient.
-- **Concurrent reads**: Define how simultaneous reads using the same agent identity behave; cursor updates must never move backward.
-- **Unknown reader**: Should reading with an unregistered name register that participant, or require prior registration through a send?
-- **Read delivery failures**: Define when read state advances relative to output delivery and how an agent can recover or reread history after a failure.
-- **Archive naming**: Choose the timestamp timezone and resolve multiple archives of the same room name within one second.
 
 ## Future Extensions
 
