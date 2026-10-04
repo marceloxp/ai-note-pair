@@ -1,6 +1,6 @@
 # ai-note-pair Specification
 
-Status: MVP implemented. Normative behavior for the delivered CLI is described below.
+Status: MVP implemented. Normative behavior for the delivered CLI and the local stdio MCP server is described below.
 
 ## Vision
 
@@ -164,7 +164,8 @@ ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --me
 - **CLI framework**: Typer.
 - **Database**: SQLite via the Python standard library.
 - **JSON**: Python standard library for attachment references and structured output.
-- **Distribution**: Installable Python package exposing the global `ai-note-pair` command through a console entry point.
+- **Distribution**: Installable Python package exposing the global `ai-note-pair` and `ai-note-pair-mcp` commands through console entry points. Application and test files live under `src`. The server does not read repository-root documents.
+- **MCP**: Official Python MCP SDK over stdio. Each client launches its own server process. Processes share one storage root.
 
 ## Implementation Constraints
 
@@ -172,7 +173,7 @@ ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --me
 - Rooms and their read state are isolated.
 - Attachments remain local to their rooms and move with archived rooms.
 - Support MB-scale message content.
-- Concurrent local CLI invocations must preserve consistent routing and read state.
+- Concurrent local CLI invocations and MCP server processes must preserve consistent routing and read state. They observe the same participants, messages, attachments, and cursors.
 - Provide clear errors for missing rooms, invalid recipient selection, attachment failures, and corrupted databases.
 
 ## Commands (MVP)
@@ -185,6 +186,29 @@ ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --me
 - `list-rooms [--archived]`: List active or archived rooms.
 
 Message commands support the content and output options above. Participants are registered implicitly through message sending.
+
+## MCP Interface
+
+`ai-note-pair-mcp` serves the same storage over stdio. It does not speak HTTP, expose resources or prompts, execute models, or notify agents on its own. The user tells an agent when to call `read_messages`.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `create_room` | `name` | Empty room identity and absolute directory. |
+| `list_rooms` | `archived=false` | Sorted active or archived names. |
+| `room_info` | `room` | Path, dates, participants, total messages, and sent-message counts. Does not consume conversation. Use it to discover a name already registered for you. |
+| `send_message` | `room`, `name`, `message`, optional `to`, optional `attachments` | Stores text, copies local attachment files, and returns confirmation plus `pending` shared history. |
+| `read_messages` | `room`, `name` | Conversation after that agent's cursor. |
+| `archive_room` | `room` | Archive directory name and absolute path. |
+
+Message text is the `message` string, including line breaks. MCP calls have no shell quoting, stdin, or message-file option. Attachment results are room-relative references. Resolve them against the directory from `room_info`. Routing, registration, broadcasts, archive names, and schema rules match the CLI.
+
+### Response Delivery
+
+Returning from a tool handler, or the SDK placing a result on an internal queue, does not consume messages. Immediately before the transport writes a serialized successful JSON-RPC response to stdout, the server advances the named agent's cursor on the captured room instance. Other agents' cursors stay unchanged.
+
+This is optimistic acknowledgment: once writing starts, failed writes, failed flushes, disconnections, and cancellation do not undo the cursor update. The client may miss messages that are already marked read. Tool errors, response serialization failures, and cancellation before writing starts leave the cursor unchanged. A send can already be committed before its response starts; retrying it can create a duplicate.
+
+Messages beyond the captured range stay pending, and cursors never move backward. No room lock is held during output. Acknowledgment stays bound to the original room instance after archiving and active-name reuse. The CLI continues to acknowledge after successful output; this optimistic policy applies to MCP responses.
 
 ## Future Extensions
 

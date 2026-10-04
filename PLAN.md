@@ -1,130 +1,108 @@
-# ai-note-pair Implementation Plan
+# ai-note-pair MCP Implementation Plan
 
 Implementer: Grok 4.7.
 
-## Goal and Scope
+## Objective
 
-Build the local Python CLI described in [SPEC.md](SPEC.md): persistent room-based chat for two or more independently running AI agents on the same machine. Deliver an installable `ai-note-pair` command with tests.
+Add a local MCP interface to the existing app so AI clients discover available operations, parameters, and behavior directly from tool definitions. Preserve the working CLI and reuse its Python application logic, SQLite storage, and attachments.
 
-Treat the SPEC as the product reference. This plan defines implementation milestones and acceptance criteria, not a prescribed internal architecture. Choose appropriate modules, abstractions, and libraries within the agreed stack.
+This plan covers the next implementation phase; the initial CLI plan is complete. Follow the current SPEC for existing behavior, including synchronization during `send`.
 
-Do not add model execution, provider configuration, authentication, enforced agent roles, remote communication, Docker support, or future extensions to the MVP.
+## Agreed Scope
 
-## Repository Boundary
+- Use the official Python MCP SDK and the `stdio` transport. Each client launches its own server process; all processes share the same storage root.
+- Call the app's Python logic directly rather than invoking shell commands or duplicating domain behavior.
+- Keep `room` and agent `name` explicit in tool arguments. Preserve permissive identity, implicit registration, recipient inference, and broadcasts.
+- Use optimistic MCP acknowledgment: advance the cursor when writing a serialized successful response starts. Failures or cancellation before that start leave it unchanged; interruptions afterward do not undo it. No separate acknowledgment tool is required, and receipt by the model itself is not guaranteed. Disconnections at the delivery boundary can have an uncertain outcome.
+- The user tells an agent when messages are available; the agent then calls `read_messages`. Do not implement polling, automatic agent activation, or background notifications.
+- Preserve local-only operation. HTTP, remote hosting, authentication, resources, prompts, and model execution are outside this phase.
 
-All application code and supporting development files belong inside `./src`. This includes Python package metadata (`pyproject.toml`), the dependency lockfile, tests, tool configuration, and any build or execution scripts. Keep virtual environments, generated build files, and test artifacts inside `./src` or outside the repository as appropriate.
+## Repository and Working Rules
 
-The repository root holds project documentation and repository housekeeping only. The installed app must not depend on root-level files. Choose the Python package layout inside `./src`; the directory is the application project root, not necessarily the package itself.
+All application code, package/dependency changes, tests, and tooling stay inside `./src`. Root documents can describe installation and usage; runtime operation must not depend on them. Use isolated temporary storage in tests.
 
-Runtime room data belongs in the local storage location described by the SPEC, outside the repository. Tests must use isolated temporary storage rather than the user's real rooms.
+Use idiomatic Python, appropriate typing, and the existing project conventions. Work in the milestones below, adding meaningful tests with each capability. Choose a modest design rather than introducing a new framework around the app. Preserve existing fixes for room identity, archive coordination, legacy databases, attachment failures, and path containment.
 
-## Working Approach
+Do not commit unless the user asks. Report each milestone's behavior, validation, and material limitations. Check off only completed milestones.
 
-- Complete one milestone at a time, including its relevant tests, before moving on.
-- Keep changes focused on a usable capability; avoid both a single monolithic implementation and separate tasks for every function.
-- Use idiomatic Python, clear names, appropriate type annotations, and a modest separation between CLI handling and persistence/domain behavior.
-- Prefer standard-library capabilities and a small dependency set. Use `uv` and choose Click or Typer.
-- Handle database connections, transactions, and filesystem resources deliberately. Surface actionable CLI errors and meaningful exit codes.
-- Test observable behavior and failure cases, rather than private implementation details. Add tests alongside features instead of postponing them to the final milestone.
-- At each milestone, report the resulting capability, validation performed, and any remaining limitation. Update the checklist only when its acceptance criteria are met.
+## Tool Surface
 
-## Decisions to Resolve During Implementation
+The following is the intended public surface. Choose consistent response schemas, preserving existing message fields and semantics.
 
-The SPEC still has a few open policy choices. Before implementing the affected behavior, choose and document a simple, consistent policy in the SPEC, with tests. Do not silently change established requirements. If a choice materially changes the intended product behavior, leave it explicit for discussion rather than assuming approval.
+| Tool | Arguments | Result and behavior |
+| --- | --- | --- |
+| `create_room` | `name` | Creates an empty room and returns its identity/path information. |
+| `list_rooms` | `archived=false` | Returns active or archived room names. |
+| `room_info` | `room` | Returns path, dates, participants, total messages, and messages sent per agent; does not consume conversation. |
+| `send_message` | `room`, `name`, `message`, optional `to`, optional `attachments` | Sends text with local attachment paths, returns confirmation and pending shared conversation, and acknowledges the sender through the sent ID when response writing starts. |
+| `read_messages` | `room`, `name` | Returns all conversation after that agent's cursor and acknowledges the delivered range. |
+| `archive_room` | `room` | Archives the room and returns the resulting archive information. |
 
-- Broadcast syntax and whether its token is reserved as an agent name.
-- Sending without a recipient when fewer than two participants are known, and broadcasting without another known participant.
-- Whether an unknown reader joins implicitly or must first be registered through a send.
-- Simultaneous reads under the same identity, and when a cursor advances relative to output delivery. Document realistic failure/retry behavior without claiming guaranteed consumption by an external agent.
-- Archive timestamp timezone and collisions within the same second.
+Text is a string, including multiline content; there is no shell quoting, stdin, or message-file option in MCP calls. Attachments remain local files with room-relative references in results. Room information supplies the directory needed to resolve those references.
 
-These are small policy decisions, not invitations to expand scope with new subsystems.
+Tool descriptions and argument schemas must be sufficient for an agent to discover its registered name, address messages, and understand consumption of shared history without consulting a long manual. Describe the side effects of `read_messages` and `send_message` explicitly. Structured results should also be accessible to clients that consume text tool results.
 
 ## Milestones
 
-### 1. Package Foundation and Room Storage
+### 1. MCP Server Foundation and Discovery
 
-Establish the Python project under `./src`, the installable CLI entry point, and isolated SQLite-backed rooms. Implement `create-room` and active `list-rooms`, with schema versioning and room metadata.
-
-Acceptance criteria:
-
-- The CLI runs through the project environment and offers command help.
-- Rooms persist across separate invocations and are isolated from one another.
-- A new room starts empty with schema version `1`.
-- Duplicate creation and invalid room paths produce clear errors without overwriting data or escaping the storage directory.
-- Tests cover creation, listing, isolation, and representative failures using temporary storage.
-
-### 2. Message Sending, Participants, and Room Information
-
-Implement direct and broadcast sending, permissive identity, implicit participant registration, recipient inference, and `info`. Start with inline message input and establish human-readable and JSON output conventions.
+Add the SDK dependency and an installed server entry point, establish the stdio lifecycle, and expose `create_room`, `list_rooms`, and `room_info` using the existing logic.
 
 Acceptance criteria:
 
-- The first direct send registers sender and recipient together with the message; repeated names reuse the same participant.
-- With two participants, an omitted recipient resolves to the other agent. With more than two, an explicit recipient is required.
-- A new sender cannot bypass recipient requirements by relying on the membership count before its own registration.
-- Broadcasts create a single message and no participant representing the broadcast token.
-- `info` shows room metadata, total messages, participant count, and messages sent per agent, including zero-message recipients.
-- Inspection does not change membership or read state. Failed sends do not leave partial registration or messages.
-- Tests cover the two-agent flow, growth to four participants, routing errors, broadcasts, and information counts.
+- A client can start the installed server from outside the repository, initialize it, discover tools, and call these room operations.
+- Descriptions and schemas are concise, typed, and self-contained; results have consistent structured contracts.
+- Storage defaults and `AI_NOTE_PAIR_HOME` work as they do in the CLI. Two independent server processes can inspect the same rooms.
+- Stdout contains MCP messages only; diagnostics use stderr. Domain failures return useful MCP tool errors without terminating the server.
+- Protocol-level tests cover initialization, discovery, room operations, and a failed call followed by a successful call.
 
-### 3. Per-Agent Conversation Synchronization
+### 2. Shared Messaging and Response Delivery
 
-Implement `read` using independent per-agent cursors. This is shared conversation history, not a recipient-filtered inbox.
+Expose `send_message` and `read_messages`, preserving pending-context delivery and independent read cursors. Integrate cursor acknowledgment with the actual response-delivery boundary supported by the chosen SDK/transport.
 
 Acceptance criteria:
 
-- A first read returns the full history; later reads return only IDs greater than that agent's last read ID, in ascending order.
-- Every new message is included, regardless of sender or recipient, including the reader's own messages and broadcasts.
-- Only the requesting agent's cursor advances, to the last returned ID; an empty read does not advance it.
-- Sending never advances the sender's cursor.
-- Each read has a fixed upper ID; messages arriving afterward remain available for the next read.
-- Tests demonstrate independent synchronization in rooms with two and four agents, including new messages addressed exclusively to other agents and history preceding participant registration.
-- Concurrent operations preserve message and cursor consistency; test representative concurrent sends/reads, including reads under the same identity, against the documented policy.
+- A two-agent exchange supports recipient inference; a four-agent room requires explicit recipients. Broadcasts retain existing rules.
+- Reads include messages addressed to other agents. Sends return pending history without echoing the new message, then acknowledge through its ID for the sender only.
+- Handler returns and queued results do not acknowledge conversation. The boundary is the start of writing a serialized successful response; interrupted writes or flushes remain acknowledged.
+- Tool failures, serialization failures, and cancellation before response writing starts do not consume pending conversation. A committed send may survive a failed response; document the retry implications.
+- Each result captures a bounded range. Later arrivals remain pending, cursor updates never move backward, and no room lock is held while waiting for output.
+- Tests cover two/four agents, multiline Unicode text, broadcasts, independent cursors, successful delivery, serialization failure, write/flush interruptions after acknowledgment, cancellation before and after writing starts, and later arrivals. Include transport-level validation rather than testing handler returns alone.
 
-### 4. Large Message Input and Attachments
+### 3. Attachments, Archiving, and Cross-Interface Consistency
 
-Extend sending with UTF-8 file input, stdin, and repeatable attachments. Include attachment metadata in read output.
-
-Acceptance criteria:
-
-- Exactly one message input source is accepted: inline text, file, or stdin.
-- Unicode and MB-scale content survive storage and retrieval without truncation.
-- Attachments are copied into their room and referenced by relative paths. Identical source filenames do not overwrite previous attachments.
-- Missing/unreadable inputs and copy failures produce clear errors without leaving a partially committed message.
-- Tests cover input selection, stdin/file round trips, multiple attachments, filename collisions, and relevant failure cleanup.
-
-### 5. Archiving and Storage Failure Handling
-
-Implement `archive` and archived `list-rooms`. Complete handling of database and filesystem failures, including operations overlapping with archiving.
+Complete `archive_room` and attachment support. Verify that MCP processes and CLI invocations can operate on the same storage without divergence.
 
 Acceptance criteria:
 
-- Archiving preserves the database, participant cursors, and attachments together in the timestamp-suffixed directory.
-- The active name can be reused for a new independent room.
-- Repeated archives preserve prior archives, including timestamp collisions.
-- Concurrent or failed archive operations do not silently lose committed data or report success after a partial move.
-- Missing rooms, corrupted databases, unsupported schema versions, and relevant filesystem failures have actionable errors.
-- Tests cover archive preservation, name reuse, archived listing, and representative failure/concurrency cases.
+- Attachments are copied and returned with usable references; collisions, invalid paths, and permission failures retain clear errors and cleanup behavior.
+- Archiving preserves conversation, attachments, and cursors, supports active-name reuse, and does not split an in-flight send from its files.
+- Pending acknowledgments stay bound to the original room instance after archiving/recreation. Existing schema-1 rooms continue to work.
+- CLI and MCP observe the same participants, messages, and read state. Reading or sending through one interface updates the state seen through the other.
+- Tests cover representative concurrent operations across clients/interfaces, archive overlap, name reuse, and storage failures. Preserve existing regression coverage rather than duplicating every unit test through MCP.
 
-### 6. End-to-End Validation and Delivery
+### 4. Installation, Agent Guidance, and Final Validation
 
-Verify the complete workflow and package installation. Update the root README with setup and usage instructions and reconcile the SPEC with implemented policy choices.
+Finish packaging and documentation and validate the server as a client would use it.
 
 Acceptance criteria:
 
-- An installed `ai-note-pair` command works from outside the repository without depending on root-level files.
-- A full CLI workflow covers room creation, initial name discovery through `info`, two-agent conversation, expansion to four agents, independent reads, attachments, archiving, and name reuse.
-- Machine-readable output is valid JSON; errors use nonzero exit codes and do not contaminate successful JSON output.
-- The test suite and selected formatting/lint checks pass. Document exact commands, run from `./src`, and any material limitations.
-- README explains installation, content input, recipient rules, and per-agent synchronization with practical examples.
-- No required application code, dependencies, configuration, or test tooling has been placed at the repository root.
+- Provide one short client configuration example specifying executable, arguments, and optional storage environment. Clarify that each client's settings format may differ; do not modify the user's clients automatically.
+- Update SPEC and README to include the MCP interface and delivery policy. Keep USAGE a concise practical guide; avoid historical context and extensive per-agent instructions.
+- Tool descriptions carry operational guidance: discover your registered name, read when the user requests it, and consume pending context returned by sends.
+- A real SDK client launches the installed server and completes creation, name discovery, two-agent exchange, growth to four agents, independent synchronization, attachment sharing, and archiving/name reuse.
+- Full tests, Ruff, and formatting checks pass. Report exact validation commands and remaining limitations.
+- Confirm the installed server has no dependency on root-level application files and all required development/runtime supporting files remain under `./src`.
 
 ## Completion Checklist
 
-- [x] 1. Package foundation and room storage
-- [x] 2. Message sending, participants, and room information
-- [x] 3. Per-agent conversation synchronization
-- [x] 4. Large message input and attachments
-- [x] 5. Archiving and storage failure handling
-- [x] 6. End-to-end validation and delivery
+- [x] 1. MCP server foundation and discovery
+- [x] 2. Shared messaging and response delivery
+- [x] 3. Attachments, archiving, and cross-interface consistency
+- [x] 4. Installation, agent guidance, and final validation
+
+## Primary References
+
+- Python SDK: https://github.com/modelcontextprotocol/python-sdk
+- Tools and structured results: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+- Stdio transport: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports

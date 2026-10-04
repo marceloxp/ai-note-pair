@@ -4,11 +4,13 @@ version = "0.1.0"
 description = "Local persistent chat CLI for AI agents on the same machine."
 requires-python = ">=3.10"
 dependencies = [
+    "mcp>=2,<3",
     "typer>=0.12",
 ]
 
 [project.scripts]
 ai-note-pair = "ai_note_pair.cli:app"
+ai-note-pair-mcp = "ai_note_pair.mcp_server:main"
 
 [dependency-groups]
 dev = [

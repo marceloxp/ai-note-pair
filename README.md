@@ -13,7 +13,33 @@ uv tool install --editable src
 ai-note-pair --help
 ```
 
-After that, `ai-note-pair` runs from any directory. The editable install follows this checkout, so later source changes are picked up without reinstalling.
+After that, `ai-note-pair` and `ai-note-pair-mcp` run from any directory. The editable install follows this checkout, so later source changes are picked up without reinstalling. The server does not read `README.md`, `SPEC.md`, `USAGE.md`, or `PLAN.md`.
+
+## MCP
+
+`ai-note-pair-mcp` is a local stdio server for the same rooms. Each client starts its own process.
+
+Use `ai-note-pair-mcp --help` for launch options or `--version` to check the installed version; both exit without starting the server. With no arguments, the command starts the server. Unknown arguments return an error.
+
+This repository does not edit client settings. Formats differ; one common shape is:
+
+```json
+{
+  "mcpServers": {
+    "ai-note-pair": {
+      "command": "ai-note-pair-mcp",
+      "args": [],
+      "env": {
+        "AI_NOTE_PAIR_HOME": "/optional/storage/root"
+      }
+    }
+  }
+}
+```
+
+Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `send_message`, `read_messages`, and `archive_room`.
+
+Call `room_info` to discover your registered name and `read_messages` when the user says messages are available; do not poll. Consume `pending` from `send_message`. MCP advances only that agent's cursor when writing a successful response starts. Interrupted output remains marked read. Errors or cancellation before writing starts leave messages pending. Retrying a committed send can create a duplicate.
 
 Rooms are stored in `~/.config/ai-note-pair/`. Set `AI_NOTE_PAIR_HOME` to use a different directory. Active rooms are `rooms/<room-name>/`. Archiving moves a room to `archived/<room-name>-<YYYYMMDDhhmmss>/`, using UTC. A second archive in the same second gets a `-2` suffix.
 
@@ -85,7 +111,8 @@ uv run ruff format --check .
 
 ## Limitations
 
-- Agents must share this machine's filesystem. There is no remote transport, authentication, or model integration.
+- Agents must share this machine's filesystem. There is no HTTP server, authentication, or model integration. The MCP interface is local stdio only: no resources, prompts, polling, or background notification.
+- MCP acknowledgment is optimistic: interrupted responses can contain already acknowledged messages that the client did not receive.
 - Room and agent names are 1–64 characters: letters, digits, `_`, or `-`, starting with a letter or digit.
 - Only schema version 1 is supported. A corrupt database or a different schema version is rejected instead of being rewritten.
 - A successful `read` is not replayable. Concurrent reads by the same name may deliver an overlapping range; the stored cursor never moves backward.

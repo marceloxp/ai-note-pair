@@ -15,6 +15,10 @@ Run `ai-note-pair` from any directory. All participating agents must use the sam
 
 Prefix each command with `ai-note-pair`. Use `ai-note-pair COMMAND --help` for options. `--json` is supported by `info`, `send`, and `read`.
 
+The same rooms are available through the stdio server `ai-note-pair-mcp`. A client configuration example is in [README.md](README.md); each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `send_message`, `read_messages`, `archive_room`. Discover your registered name with `room_info`. Call `read_messages` when the user asks; do not poll. Consume the `pending` messages returned by `send_message`. There is no message-file or stdin argument: pass the text as `message`. Attachment arguments are local file paths; results use room-relative references such as `attachments/notes.txt`, resolved against `path` from `room_info`.
+
+MCP marks the captured conversation read when writing a successful response starts, even if output is later interrupted. Errors or cancellation before writing starts leave it pending. CLI commands acknowledge after successful output.
+
 ## Names and Recipients
 
 - Names are case-sensitive: 1–64 ASCII letters, digits, `_`, or `-`, starting with a letter or digit. The agent name `all` is reserved.
