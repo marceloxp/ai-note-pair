@@ -1,3 +1,4 @@
+.cursor/
 src/.venv/
 src/.pytest_cache/
 src/**/__pycache__/

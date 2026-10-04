@@ -73,37 +73,43 @@ def test_reads_are_independent_and_include_every_message(
     _send(runner, cli_env, name="bob", message="hi")
     _send(runner, cli_env, name="alice", message="all hands", to="all")
 
-    assert _cursors(storage_home)["alice"][0] == 0
-    assert _cursors(storage_home)["bob"][0] == 0
-
-    alice = _read(runner, cli_env, "alice", as_json=True)
-    assert alice.exit_code == 0, alice.stderr
-    assert alice.stderr == ""
-    payload = json.loads(alice.stdout)
-    assert [item["id"] for item in payload["messages"]] == [1, 2, 3]
-    assert [item["sender"] for item in payload["messages"]] == ["alice", "bob", "alice"]
-    assert payload["messages"][2]["recipient"] == "all"
-    assert payload["messages"][0]["content"] == "hello"
     assert _cursors(storage_home)["alice"][0] == 3
-    assert _cursors(storage_home)["alice"][1] is not None
-    assert _cursors(storage_home)["bob"] == (0, None)
-
-    empty = _read(runner, cli_env, "alice")
-    assert empty.exit_code == 0
-    assert empty.stdout.strip() == "No unread messages."
-    assert _cursors(storage_home)["alice"][0] == 3
+    assert _cursors(storage_home)["bob"][0] == 2
 
     bob = _read(runner, cli_env, "bob", as_json=True)
-    bob_ids = [item["id"] for item in json.loads(bob.stdout)["messages"]]
-    assert bob_ids == [1, 2, 3]
+    assert bob.exit_code == 0, bob.stderr
+    assert bob.stderr == ""
+    payload = json.loads(bob.stdout)
+    assert [item["id"] for item in payload["messages"]] == [3]
+    assert payload["messages"][0]["sender"] == "alice"
+    assert payload["messages"][0]["recipient"] == "all"
+    assert payload["messages"][0]["content"] == "all hands"
+    assert _cursors(storage_home)["bob"][0] == 3
+    assert _cursors(storage_home)["bob"][1] is not None
+    assert _cursors(storage_home)["alice"][0] == 3
+
+    empty = _read(runner, cli_env, "bob")
+    assert empty.exit_code == 0
+    assert empty.stdout.strip() == "No unread messages."
     assert _cursors(storage_home)["bob"][0] == 3
 
     _send(runner, cli_env, name="bob", message="only for carol", to="carol")
     alice_again = _read(runner, cli_env, "alice", as_json=True)
-    again_ids = [item["id"] for item in json.loads(alice_again.stdout)["messages"]]
-    assert again_ids == [4]
-    assert _cursors(storage_home)["bob"][0] == 3
+    again = json.loads(alice_again.stdout)["messages"]
+    assert [item["id"] for item in again] == [4]
+    assert again[0]["recipient"] == "carol"
+    assert _cursors(storage_home)["bob"][0] == 4
     assert _cursors(storage_home)["carol"][0] == 0
+
+    carol = _read(runner, cli_env, "carol", as_json=True)
+    carol_messages = json.loads(carol.stdout)["messages"]
+    assert [item["content"] for item in carol_messages] == [
+        "hello",
+        "hi",
+        "all hands",
+        "only for carol",
+    ]
+    assert _cursors(storage_home)["bob"][0] == 4
 
 
 def test_first_read_includes_history_before_registration(
@@ -134,16 +140,18 @@ def test_four_agent_reads_stay_independent(
     _send(runner, cli_env, name="carol", message="c", to="dave")
     alice = _read(runner, cli_env, "alice", as_json=True)
     dave = _read(runner, cli_env, "dave", as_json=True)
-    assert [item["id"] for item in json.loads(alice.stdout)["messages"]] == [1, 2]
+    assert [item["id"] for item in json.loads(alice.stdout)["messages"]] == [2]
     assert [item["id"] for item in json.loads(dave.stdout)["messages"]] == [1, 2]
     assert _cursors(storage_home)["bob"][0] == 0
-    assert _cursors(storage_home)["carol"][0] == 0
+    assert _cursors(storage_home)["carol"][0] == 2
 
     _send(runner, cli_env, name="bob", message="later", to="dave")
     carol = _read(runner, cli_env, "carol", as_json=True)
-    assert [item["id"] for item in json.loads(carol.stdout)["messages"]] == [1, 2, 3]
+    assert [item["id"] for item in json.loads(carol.stdout)["messages"]] == [3]
     alice_delta = _read(runner, cli_env, "alice", as_json=True)
     assert [item["id"] for item in json.loads(alice_delta.stdout)["messages"]] == [3]
+    assert _cursors(storage_home)["dave"][0] == 2
+    assert _cursors(storage_home)["bob"][0] == 3
 
 
 def test_cursor_advances_only_after_messages_are_collected(
@@ -154,8 +162,8 @@ def test_cursor_advances_only_after_messages_are_collected(
     _send(runner, cli_env, name="bob", message="two")
     home = storage_home
     batch = collect_unread("projectx", "alice", home)
-    assert [message.id for message in batch.messages] == [1, 2]
-    assert _cursors(storage_home)["alice"][0] == 0
+    assert [message.id for message in batch.messages] == [2]
+    assert _cursors(storage_home)["alice"][0] == 1
 
     _send(runner, cli_env, name="bob", message="three")
     acknowledge_read(batch, home)
@@ -175,9 +183,7 @@ def test_concurrent_same_identity_reads_never_move_backward(
 ) -> None:
     _create(runner, cli_env)
     for index in range(8):
-        sender = "alice" if index % 2 == 0 else "bob"
-        recipient = None if index else "bob"
-        _send(runner, cli_env, name=sender, message=f"m{index}", to=recipient)
+        _send(runner, cli_env, name="bob", message=f"m{index}", to="alice")
 
     home = storage_home
     delivered: list[list[int]] = []
@@ -203,7 +209,7 @@ def test_concurrent_same_identity_reads_never_move_backward(
     assert errors == []
     cursor = _cursors(storage_home)["alice"][0]
     assert cursor == 8
-    assert _cursors(storage_home)["bob"][0] == 0
+    assert _cursors(storage_home)["bob"][0] == 8
     seen = {message_id for batch in delivered for message_id in batch}
     final = collect_unread("projectx", "alice", home)
     seen.update(message.id for message in final.messages)

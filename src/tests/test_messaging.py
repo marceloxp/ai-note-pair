@@ -92,6 +92,7 @@ def test_first_direct_send_registers_both_participants(
     assert info.exit_code == 0
     assert "Participants: 2" in info.stdout
     assert "Messages: 1" in info.stdout
+    assert f"Path: {(storage_home / 'rooms' / 'projectx').resolve()}" in info.stdout
     assert "alice" in info.stdout
     assert "bob" in info.stdout
     assert _counts(storage_home) == {"alice": 1, "bob": 0}
@@ -139,6 +140,7 @@ def test_info_json_and_inspection_do_not_change_state(
     payload = json.loads(info.stdout)
     assert payload["participants"] == 2
     assert payload["messages"] == 1
+    assert payload["path"] == str((storage_home / "rooms" / "projectx").resolve())
     assert payload["agents"] == [
         {"name": "alice", "messages_sent": 1},
         {"name": "bob", "messages_sent": 0},

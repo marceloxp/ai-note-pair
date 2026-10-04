@@ -9,6 +9,8 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from ai_note_pair.cli import app
+from ai_note_pair.messaging import collect_unread
+from ai_note_pair.presentation import render_unread
 from ai_note_pair.storage import DATABASE_FILENAME
 
 
@@ -110,10 +112,11 @@ def test_file_and_stdin_round_trip(
         input_text="via stdin",
     )
     assert from_stdin.exit_code == 0, from_stdin.stderr
+    assert "linha com ação e emoji 🤖\n" in from_stdin.stdout
 
     read = _invoke(runner, ["read", "--room", "projectx", "--name", "alice", "--json"], cli_env)
     messages = json.loads(read.stdout)["messages"]
-    assert [item["content"] for item in messages] == ["linha com ação e emoji 🤖\n", "via stdin"]
+    assert [item["content"] for item in messages] == ["via stdin"]
 
 
 def test_large_unicode_message_is_not_truncated(
@@ -186,6 +189,8 @@ def test_multiple_attachments_and_filename_collisions(
     assert (room_attachments / "notes.txt").read_text(encoding="utf-8") == "first"
     assert (room_attachments / "notes-2.txt").read_text(encoding="utf-8") == "second"
 
+    pending = collect_unread("projectx", "bob", storage_home)
+    assert "Attachment: attachments/notes.txt" in render_unread(pending, as_json=False)
     read = _invoke(runner, ["read", "--room", "projectx", "--name", "bob", "--json"], cli_env)
     attachments = json.loads(read.stdout)["messages"][0]["attachments"]
     assert attachments == [
@@ -193,10 +198,6 @@ def test_multiple_attachments_and_filename_collisions(
         "attachments/notes-2.txt",
         "attachments/extra.md",
     ]
-    assert (
-        "Attachment: attachments/notes.txt"
-        in _invoke(runner, ["read", "--room", "projectx", "--name", "alice"], cli_env).stdout
-    )
 
 
 def test_failed_attachment_copy_leaves_no_message(

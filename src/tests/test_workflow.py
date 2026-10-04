@@ -100,9 +100,9 @@ def test_full_cli_workflow(
     assert alice_read.exit_code == 0 and dave_read.exit_code == 0
     alice_messages = json.loads(alice_read.stdout)["messages"]
     dave_messages = json.loads(dave_read.stdout)["messages"]
-    assert [item["id"] for item in alice_messages] == [1, 2, 3, 4]
+    assert [item["id"] for item in alice_messages] == [4]
     assert [item["id"] for item in dave_messages] == [1, 2, 3, 4]
-    assert alice_messages[2]["attachments"] == ["attachments/note.txt"]
+    assert dave_messages[2]["attachments"] == ["attachments/note.txt"]
     assert (storage_home / "rooms" / "projectx" / "attachments" / "note.txt").read_text(
         encoding="utf-8"
     ) == "shared notes"

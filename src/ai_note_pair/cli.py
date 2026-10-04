@@ -92,7 +92,7 @@ def info_command(
     room: str = typer.Option(..., "--room", help="Room to inspect."),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
-    """Show room metadata and sent-message counts."""
+    """Show the room directory, metadata, and sent-message counts."""
     typer.echo(render_room_info(room_info(room, storage_home()), as_json=json_output))
 
 
@@ -123,7 +123,7 @@ def send_command(
 ) -> None:
     """Send a direct or broadcast message."""
     content = load_message_content(message, message_file)
-    sent = publish_message(
+    delivery = publish_message(
         room,
         name,
         content,
@@ -131,7 +131,10 @@ def send_command(
         storage_home(),
         [Path(path) for path in attachment or []],
     )
-    typer.echo(render_sent_message(sent, as_json=json_output))
+    typer.echo(
+        render_sent_message(delivery.sent, as_json=json_output, pending=delivery.pending.messages)
+    )
+    acknowledge_read(delivery.pending, storage_home())
 
 
 @app.command("read")

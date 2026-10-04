@@ -51,7 +51,7 @@ def test_stale_read_does_not_mark_the_replacement_room(
             cli_env,
         )
         assert sent.exit_code == 0, sent.stderr
-    batch = collect_unread("projectx", "alice", storage_home)
+    batch = collect_unread("projectx", "bob", storage_home)
     assert [message.id for message in batch.messages] == [1, 2, 3]
 
     archive_room("projectx", storage_home)
@@ -66,14 +66,15 @@ def test_stale_read_does_not_mark_the_replacement_room(
     acknowledge_read(batch, storage_home)
 
     new_database = storage_home / "rooms" / "projectx" / DATABASE_FILENAME
-    assert _cursor(new_database) == 0
-    reread = _invoke(runner, ["read", "--room", "projectx", "--name", "alice", "--json"], cli_env)
+    assert _cursor(new_database, "bob") == 0
+    assert _cursor(new_database, "alice") == 1
+    reread = _invoke(runner, ["read", "--room", "projectx", "--name", "bob", "--json"], cli_env)
     assert reread.exit_code == 0, reread.stderr
     assert '"fresh"' in reread.stdout
 
     archived = list((storage_home / "archived").iterdir())
     assert len(archived) == 1
-    assert _cursor(archived[0] / DATABASE_FILENAME) == 3
+    assert _cursor(archived[0] / DATABASE_FILENAME, "bob") == 3
 
 
 def test_archive_waits_until_send_finishes_with_its_attachment(

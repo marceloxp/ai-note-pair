@@ -65,7 +65,7 @@ ai-note-pair info --room projectx [--json]
 
 Inspect room data without consuming messages or changing membership/read state. Include:
 
-- Room name, creation time, and last modification time.
+- Room name, directory path, creation time, and last modification time.
 - Total message count and participant count.
 - Each known participant's name and sent-message count, including participants with zero sent messages.
 
@@ -83,7 +83,7 @@ alice    1
 bob      0
 ```
 
-Bob can inspect this information to discover the name already registered for him, then use `--name bob` to read or send. The example abbreviates the full output by omitting timestamps.
+Bob can inspect this information to discover the name already registered for him, then use `--name bob` to read or send. The example abbreviates the full output by omitting the directory path and timestamps.
 
 ### Read as Synchronization
 
@@ -102,7 +102,9 @@ Example: if agent `alice` last read ID `4` and the room now contains messages th
 
 Read state is per agent. Reading a broadcast as one agent must not mark it read for other agents. Message IDs determine synchronization order; timestamps record when events happened.
 
-All messages after the cursor are included, regardless of sender or recipient, including the reader's own messages and broadcasts. Sending a message does not advance the sender's read cursor, since that could skip intervening conversation.
+All messages after the cursor are included, regardless of sender or recipient, including the reader's own messages and broadcasts.
+
+A successful send synchronizes the sender on that same room instance. Messages still unread by the sender, with IDs greater than the sender's cursor and lower than the new message ID, are returned with the send confirmation in both human-readable and JSON output. The new message is confirmed and counts as read; it is not repeated in that pending list. After the command has written this output, only the sender's cursor advances to the sent message ID. Pending messages stay visible whatever their recipient, including broadcasts. Other agents' cursors stay unchanged. Messages inserted after the sent ID stay unread. When nothing was pending, the command prints the confirmation alone. A failed send does not move the cursor. If writing the confirmation fails, the cursor stays put and a later read can still return the pending context. The room lock is not held while that output is written.
 
 Recipients indicate whom a message addresses; they neither restrict visibility nor determine which messages trigger a read. The same synchronization behavior applies to two-agent and larger rooms.
 
@@ -122,7 +124,7 @@ The following representation uses one read cursor per agent in each room.
 
 - **agents**:
   - `name`: Room participant identity, unique within the room.
-  - `last_read_message_id`: Last message ID returned by a read, initially `0`.
+  - `last_read_message_id`: Last message ID covered by a successful read or send, initially `0`.
   - `read_at`: Time the cursor last advanced, initially NULL.
 - **messages**:
   - `id`: INTEGER PRIMARY KEY, ordered within the room.
@@ -152,7 +154,8 @@ ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --me
 - Allow repeatable `--attachment <path>` options; copy attachments into the room and store relative references. If that filename already exists in the room, store the new copy under a numeric suffix (`notes.txt`, then `notes-2.txt`) and leave the earlier file unchanged.
 - Include attachment metadata in read results.
 - Support human-readable output and machine-readable JSON (`--json`).
-- Preserve message IDs and sender/recipient information in read results.
+- On success, return the sender's pending messages with the confirmation. JSON includes them in `pending`. The human-readable form prints them after the confirmation, using the same message blocks as `read`.
+- Preserve message IDs and sender/recipient information in read results and in that pending context.
 
 ## Stack
 
@@ -176,7 +179,7 @@ ai-note-pair send --room <room-name> --name <agent-name> [--to <recipient>] --me
 
 - `create-room --name <room-name>`: Initialize an empty room.
 - `info --room <room-name> [--json]`: Show room metadata, participants, and sent-message counts without changing read state.
-- `send --room <room-name> --name <agent-name> [--to <recipient>] ...`: Send a direct or broadcast message.
+- `send --room <room-name> --name <agent-name> [--to <recipient>] ...`: Send a direct or broadcast message and synchronize the sender's cursor through that message.
 - `read --room <room-name> --name <agent-name>`: Return unread conversation context and update that agent's read state.
 - `archive --room <room-name>`: Archive a room with a timestamp suffix.
 - `list-rooms [--archived]`: List active or archived rooms.

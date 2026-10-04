@@ -35,6 +35,7 @@ class AgentSummary:
 @dataclass(frozen=True)
 class RoomInfo:
     name: str
+    path: str
     created_at: str
     updated_at: str
     message_count: int
@@ -71,6 +72,13 @@ class UnreadBatch:
     instance_id: str
     previous_cursor: int
     messages: tuple[ChatMessage, ...]
+    delivered_id: int
+
+
+@dataclass(frozen=True)
+class SendResult:
+    sent: SentMessage
+    pending: UnreadBatch
 
 
 def validate_agent_name(name: str, *, role: str) -> str:
@@ -112,7 +120,7 @@ def publish_message(
     recipient: str | None = None,
     home: Path | None = None,
     attachment_sources: list[Path] | None = None,
-) -> SentMessage:
+) -> SendResult:
     """Copy attachments, then store the message on the same room instance."""
     validate_agent_name(sender, role="sender")
     if recipient is not None and recipient != BROADCAST:
@@ -147,8 +155,8 @@ def send_message(
     home: Path | None = None,
     attachment_paths: list[str] | None = None,
     database: Path | None = None,
-) -> SentMessage:
-    """Store one message and register any new direct participants atomically."""
+) -> SendResult:
+    """Store one message and snapshot the sender's still-unread context."""
     validate_agent_name(sender, role="sender")
     if recipient is not None and recipient != BROADCAST:
         validate_agent_name(recipient, role="recipient")
@@ -178,6 +186,14 @@ def send_message(
                 "UPDATE metadata SET value = ? WHERE key = 'updated_at'",
                 (timestamp,),
             )
+            instance_id = _metadata(connection, "instance_id")
+            previous = int(
+                connection.execute(
+                    "SELECT last_read_message_id FROM agents WHERE name = ?",
+                    (sender,),
+                ).fetchone()[0]
+            )
+            pending_rows = _select_messages(connection, previous, message_id, inclusive=False)
             connection.commit()
         except AiNotePairError:
             _rollback(connection)
@@ -188,12 +204,23 @@ def send_message(
     finally:
         connection.close()
 
-    return SentMessage(
+    sent = SentMessage(
         room=room,
         id=message_id,
         sender=sender,
         recipient=resolved,
         timestamp=timestamp,
+    )
+    return SendResult(
+        sent=sent,
+        pending=UnreadBatch(
+            room=room,
+            reader=sender,
+            instance_id=instance_id,
+            previous_cursor=previous,
+            messages=tuple(_chat_message(row) for row in pending_rows),
+            delivered_id=message_id,
+        ),
     )
 
 
@@ -219,15 +246,7 @@ def collect_unread(room: str, reader: str, home: Path | None = None) -> UnreadBa
             upper = int(
                 connection.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
             )
-            rows = connection.execute(
-                """
-                SELECT id, timestamp, sender_name, recipient_name, content, attachment_paths
-                FROM messages
-                WHERE id > ? AND id <= ?
-                ORDER BY id
-                """,
-                (previous, upper),
-            ).fetchall()
+            rows = _select_messages(connection, previous, upper, inclusive=True)
             connection.rollback()
         except AiNotePairError:
             _rollback(connection)
@@ -237,20 +256,22 @@ def collect_unread(room: str, reader: str, home: Path | None = None) -> UnreadBa
             raise _database_failure(exc) from exc
     finally:
         connection.close()
+    messages = tuple(_chat_message(row) for row in rows)
     return UnreadBatch(
         room=room,
         reader=reader,
         instance_id=instance_id,
         previous_cursor=previous,
-        messages=tuple(_chat_message(row) for row in rows),
+        messages=messages,
+        delivered_id=messages[-1].id if messages else previous,
     )
 
 
 def acknowledge_read(batch: UnreadBatch, home: Path | None = None) -> None:
-    """Advance the reader cursor to the last delivered ID, never backward."""
-    if not batch.messages:
+    """Advance the reader cursor to this delivery's ID, never backward."""
+    if batch.delivered_id <= batch.previous_cursor:
         return
-    delivered_id = batch.messages[-1].id
+    delivered_id = batch.delivered_id
     database = _database_for_instance(batch.room, batch.instance_id, home)
     connection = _open_room(database)
     try:
@@ -307,6 +328,7 @@ def room_info(room: str, home: Path | None = None) -> RoomInfo:
     )
     return RoomInfo(
         name=room,
+        path=str(database.parent.resolve()),
         created_at=created_at,
         updated_at=updated_at,
         message_count=message_count,
@@ -458,6 +480,25 @@ def _metadata(connection: sqlite3.Connection, key: str) -> str:
     if row is None:
         raise AiNotePairError(f"Room metadata is missing {key!r}.")
     return str(row["value"])
+
+
+def _select_messages(
+    connection: sqlite3.Connection,
+    after_id: int,
+    end_id: int,
+    *,
+    inclusive: bool,
+) -> list[sqlite3.Row]:
+    comparison = "id <= ?" if inclusive else "id < ?"
+    return connection.execute(
+        f"""
+        SELECT id, timestamp, sender_name, recipient_name, content, attachment_paths
+        FROM messages
+        WHERE id > ? AND {comparison}
+        ORDER BY id
+        """,
+        (after_id, end_id),
+    ).fetchall()
 
 
 def _encode_paths(paths: list[str]) -> str:
