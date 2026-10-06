@@ -49,6 +49,7 @@ def test_installed_server_discovers_and_operates_rooms_outside_the_repository(
             tools = {tool.name: tool for tool in listed.tools}
             assert set(tools) == {
                 "archive_room",
+                "check_messages",
                 "create_room",
                 "list_rooms",
                 "read_messages",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from ai_note_pair.messaging import ChatMessage, RoomInfo, SentMessage, UnreadBatch
+from ai_note_pair.messaging import ChatMessage, RoomInfo, SentMessage, UnreadBatch, UnreadCount
 
 
 def render_room_info(info: RoomInfo, *, as_json: bool) -> str:
@@ -73,6 +73,15 @@ def render_unread(batch: UnreadBatch, *, as_json: bool) -> str:
     if not batch.messages:
         return "No unread messages."
     return _render_message_blocks(batch.messages)
+
+
+def render_unread_count(count: UnreadCount, *, as_json: bool) -> str:
+    if as_json:
+        payload = {"room": count.room, "reader": count.reader, "unread": count.unread}
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    if count.unread == 1:
+        return "1 unread message."
+    return f"{count.unread} unread messages."
 
 
 def _message_payload(message: ChatMessage) -> dict[str, object]:

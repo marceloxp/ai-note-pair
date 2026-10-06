@@ -216,3 +216,59 @@ def test_concurrent_same_identity_reads_never_move_backward(
     acknowledge_read(final, home)
     assert seen == set(range(1, 9))
     assert _cursors(storage_home)["alice"][0] == 8
+
+
+def _check(
+    runner: CliRunner,
+    cli_env: dict[str, str],
+    name: str,
+    *,
+    room: str = "projectx",
+    as_json: bool = False,
+):
+    args = ["check", "--room", room, "--name", name]
+    if as_json:
+        args.append("--json")
+    return _invoke(runner, args, cli_env)
+
+
+def test_check_counts_unread_without_moving_the_cursor(
+    runner: CliRunner, storage_home: Path, cli_env: dict[str, str]
+) -> None:
+    _create(runner, cli_env)
+    _send(runner, cli_env, name="alice", message="one", to="bob")
+    _send(runner, cli_env, name="alice", message="two", to="bob")
+
+    before = _cursors(storage_home)
+    checked = _check(runner, cli_env, "bob")
+    assert checked.exit_code == 0, checked.stderr
+    assert checked.stdout.strip() == "2 unread messages."
+    assert _cursors(storage_home) == before
+
+    again = _check(runner, cli_env, "bob", as_json=True)
+    payload = json.loads(again.stdout)
+    assert payload == {"room": "projectx", "reader": "bob", "unread": 2}
+    assert _cursors(storage_home)["bob"][0] == 0
+
+    read = _read(runner, cli_env, "bob", as_json=True)
+    assert [item["content"] for item in json.loads(read.stdout)["messages"]] == ["one", "two"]
+    assert _cursors(storage_home)["bob"][0] == 2
+
+    empty = _check(runner, cli_env, "bob")
+    assert empty.exit_code == 0, empty.stderr
+    assert empty.stdout.strip() == "0 unread messages."
+    assert _cursors(storage_home)["bob"][0] == 2
+
+    _send(runner, cli_env, name="bob", message="reply")
+    alice = _check(runner, cli_env, "alice")
+    assert alice.stdout.strip() == "1 unread message."
+    assert _cursors(storage_home)["alice"][0] == 2
+
+
+def test_check_rejects_an_unregistered_agent(runner: CliRunner, cli_env: dict[str, str]) -> None:
+    _create(runner, cli_env)
+    _send(runner, cli_env, name="alice", message="hello", to="bob")
+    missing = _check(runner, cli_env, "dave")
+    assert missing.exit_code == 1
+    assert "not a participant" in missing.stderr
+    assert missing.stdout == ""

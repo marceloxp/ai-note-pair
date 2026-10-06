@@ -81,6 +81,13 @@ class SendResult:
     pending: UnreadBatch
 
 
+@dataclass(frozen=True)
+class UnreadCount:
+    room: str
+    reader: str
+    unread: int
+
+
 def validate_agent_name(name: str, *, role: str) -> str:
     """Reject blank, unsafe, or reserved agent names."""
     if name == BROADCAST or not _AGENT_NAME.fullmatch(name):
@@ -265,6 +272,42 @@ def collect_unread(room: str, reader: str, home: Path | None = None) -> UnreadBa
         messages=messages,
         delivered_id=messages[-1].id if messages else previous,
     )
+
+
+def count_unread(room: str, reader: str, home: Path | None = None) -> UnreadCount:
+    """Count messages after this agent's cursor without moving it."""
+    validate_agent_name(reader, role="reader")
+    database = _require_database(room, home)
+    connection = _open_room(database)
+    try:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT last_read_message_id FROM agents WHERE name = ?",
+                (reader,),
+            ).fetchone()
+            if row is None:
+                raise AiNotePairError(
+                    f"Agent {reader!r} is not a participant in room {room!r}. "
+                    "Send a message that includes this name before reading."
+                )
+            previous = int(row["last_read_message_id"])
+            unread = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM messages WHERE id > ?",
+                    (previous,),
+                ).fetchone()[0]
+            )
+            connection.rollback()
+        except AiNotePairError:
+            _rollback(connection)
+            raise
+        except sqlite3.Error as exc:
+            _rollback(connection)
+            raise _database_failure(exc) from exc
+    finally:
+        connection.close()
+    return UnreadCount(room=room, reader=reader, unread=unread)
 
 
 def acknowledge_read(batch: UnreadBatch, home: Path | None = None) -> None:

@@ -18,7 +18,7 @@ from ai_note_pair import __version__
 from ai_note_pair.archive import archive_room as move_room
 from ai_note_pair.errors import AiNotePairError
 from ai_note_pair.mcp_delivery import delivering_stdio, schedule_delivery, wait_for_test_hold
-from ai_note_pair.messaging import ChatMessage, collect_unread, publish_message
+from ai_note_pair.messaging import ChatMessage, collect_unread, count_unread, publish_message
 from ai_note_pair.messaging import room_info as inspect_room
 from ai_note_pair.rooms import create_room as create_empty_room
 from ai_note_pair.rooms import list_active_rooms, list_archived_rooms
@@ -32,7 +32,8 @@ server = MCPServer(
         "Use room_info to discover the name already registered for you. "
         "read_messages and send_message return conversation that this agent has not consumed. "
         "That agent's cursor advances when writing a successful tool response starts. "
-        "Other agents' cursors stay unchanged. Do not poll; read when the user asks."
+        "Other agents' cursors stay unchanged. Do not poll; read when the user says messages "
+        "are available. check_messages counts unread messages and does not move the cursor."
     ),
 )
 
@@ -236,6 +237,23 @@ def send_message(
         timestamp=sent.timestamp,
         pending=_lines(result.pending.messages),
     )
+
+
+class UnreadStatus(BaseModel):
+    room: str
+    reader: str
+    unread: int = Field(description="Messages after this agent's cursor.")
+
+
+@server.tool()
+def check_messages(room: _NAME, name: _NAME) -> UnreadStatus:
+    """Count messages after this agent's cursor without acknowledging them.
+
+    Does not change read cursors. Use this to learn whether unread conversation
+    exists. Call read_messages only when the user says messages are available.
+    """
+    status = _call(count_unread, room, name)
+    return UnreadStatus(room=status.room, reader=status.reader, unread=status.unread)
 
 
 @server.tool()

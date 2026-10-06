@@ -39,9 +39,9 @@ This repository does not edit client settings. Formats differ; one common shape 
 }
 ```
 
-Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `send_message`, `read_messages`, and `archive_room`.
+Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `check_messages`, `send_message`, `read_messages`, and `archive_room`.
 
-Call `room_info` to discover your registered name and `read_messages` when the user says messages are available; do not poll. Consume `pending` from `send_message`. MCP advances only that agent's cursor when writing a successful response starts. Interrupted output remains marked read. Errors or cancellation before writing starts leave messages pending. Retrying a committed send can create a duplicate.
+Call `room_info` to discover your registered name. `check_messages` counts unread messages and does not move the cursor. Call `read_messages` when the user says messages are available; do not poll. Consume `pending` from `send_message`. MCP advances only that agent's cursor when writing a successful response starts. Interrupted output remains marked read. Errors or cancellation before writing starts leave messages pending. Retrying a committed send can create a duplicate.
 
 Rooms are stored in `~/.config/ai-note-pair/`. Set `AI_NOTE_PAIR_HOME` to use a different directory. Active rooms are `rooms/<room-name>/`. Archiving moves a room to `archived/<room-name>-<YYYYMMDDhhmmss>/`, using UTC. A second archive in the same second gets a `-2` suffix.
 
@@ -76,6 +76,15 @@ A successful send marks the new message read by its author. If that author still
 - `--to all` broadcasts one message. The name `all` cannot be an agent. A broadcast is rejected until some other participant is already known.
 - A new sender counts toward the participant total before routing is decided. Joining a two-agent room requires an explicit recipient.
 
+## Check
+
+`check` counts messages after that agent's cursor and leaves the cursor where it is.
+
+```bash
+ai-note-pair check --room projectx --name bob
+ai-note-pair check --room projectx --name bob --json
+```
+
 ## Read
 
 `read` returns the shared history after that agent's cursor, including messages addressed to someone else, then advances only that cursor.
@@ -87,7 +96,7 @@ ai-note-pair read --room projectx --name alice --json
 
 The first read returns every message already in the room. A later read returns only newer ids. An empty read leaves the cursor unchanged. The cursor moves only after the command has written its output; if that output fails, the next read returns the same messages. After a successful read or send, this version has no replay command.
 
-Add `--json` to `info`, `send`, and `read` for machine-readable output. Errors go to stderr with a non-zero exit code and leave stdout empty.
+Add `--json` to `info`, `check`, `send`, and `read` for machine-readable output. Errors go to stderr with a non-zero exit code and leave stdout empty.
 
 ## Archive
 

@@ -1,6 +1,6 @@
 # ai-note-pair — Agent Usage
 
-Use MCP when the server is available. After `uv tool install --editable ./src`, run `ai-note-pair-mcp --help` and set the client `command` to the `Executable:` path it prints. A configuration example is in [README.md](README.md), and each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `send_message`, `read_messages`, `archive_room`. Discover your registered name with `room_info`. Call `read_messages` when the user says messages are available; do not poll. Consume the `pending` messages from `send_message`. Pass the text as `message` (no stdin or message-file). Attachment arguments are local paths; results look like `attachments/notes.txt`, resolved against `path` from `room_info`.
+Use MCP when the server is available. After `uv tool install --editable ./src`, run `ai-note-pair-mcp --help` and set the client `command` to the `Executable:` path it prints. A configuration example is in [README.md](README.md), and each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `check_messages`, `send_message`, `read_messages`, `archive_room`. Discover your registered name with `room_info`. `check_messages` reports the unread count and does not move the cursor. Call `read_messages` when the user says messages are available; do not poll. Consume the `pending` messages from `send_message`. Pass the text as `message` (no stdin or message-file). Attachment arguments are local paths; results look like `attachments/notes.txt`, resolved against `path` from `room_info`.
 
 The CLI below is the same storage when MCP is not available. Run `ai-note-pair` from any directory. Every participant uses `~/.config/ai-note-pair/`, or the directory in `AI_NOTE_PAIR_HOME`.
 
@@ -10,12 +10,13 @@ The CLI below is the same storage when MCP is not available. Run `ai-note-pair` 
 | --- | --- | --- |
 | Create | `create-room --name ROOM` | Creates an empty room; an existing name is rejected. |
 | Inspect | `info --room ROOM [--json]` | Shows the room path, dates, participants, and message counts without consuming messages. |
+| Check | `check --room ROOM --name AGENT [--json]` | Counts messages after that agent's cursor without marking them read. |
 | Send | `send --room ROOM --name AGENT [--to RECIPIENT] --message TEXT [--json]` | Confirms the send and returns pending conversation for the sender. |
 | Read | `read --room ROOM --name AGENT [--json]` | Returns new conversation messages and marks them read for that agent. |
 | Archive | `archive --room ROOM` | Archives the room with a UTC timestamp suffix, preserving its data and freeing the name. |
 | List | `list-rooms [--archived]` | Lists sorted room names, one per line; an empty list produces no output. |
 
-Prefix each command with `ai-note-pair`. Use `ai-note-pair COMMAND --help` for options. `--json` is supported by `info`, `send`, and `read`.
+Prefix each command with `ai-note-pair`. Use `ai-note-pair COMMAND --help` for options. `--json` is supported by `info`, `check`, `send`, and `read`.
 
 MCP marks the captured conversation read when writing a successful response starts, even if output is later interrupted. Errors or cancellation before writing starts leave it pending. CLI commands acknowledge after successful output.
 
@@ -75,6 +76,7 @@ Attachments are copied into the room. Filename collisions receive numeric suffix
 
 All agents read the shared conversation, including messages addressed to other participants. Each agent has its own cursor.
 
+- `check` returns how many messages are after your cursor. It does not mark them read, so a later `read` still returns them.
 - `read` returns messages after your cursor in ascending ID order. Your first read includes the entire history.
 - `send` returns confirmation plus any conversation you have not yet read, excluding the new message itself. After successful output, your cursor includes both the returned context and your new message.
 - Example: you read through `4`, messages `5` and `6` arrive, and you send `7`. The send response delivers `5` and `6` and marks you current through `7`.
@@ -112,6 +114,8 @@ All agents read the shared conversation, including messages addressed to other p
 ```
 
 No pending content produces an empty array. Without `--json`, output is readable text; an empty `read` prints `No unread messages.`
+
+`check` returns `room`, `reader`, and `unread`. Without `--json`, it prints `N unread messages.` (`1 unread message.` when the count is one).
 
 ## Errors and Archiving
 

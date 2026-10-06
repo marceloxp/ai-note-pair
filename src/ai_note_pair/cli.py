@@ -15,11 +15,17 @@ from ai_note_pair.errors import AiNotePairError
 from ai_note_pair.messaging import (
     acknowledge_read,
     collect_unread,
+    count_unread,
     load_message_content,
     publish_message,
     room_info,
 )
-from ai_note_pair.presentation import render_room_info, render_sent_message, render_unread
+from ai_note_pair.presentation import (
+    render_room_info,
+    render_sent_message,
+    render_unread,
+    render_unread_count,
+)
 from ai_note_pair.rooms import create_room, list_active_rooms, list_archived_rooms
 
 app = typer.Typer(
@@ -135,6 +141,17 @@ def send_command(
         render_sent_message(delivery.sent, as_json=json_output, pending=delivery.pending.messages)
     )
     acknowledge_read(delivery.pending, storage_home())
+
+
+@app.command("check")
+@_guard
+def check_command(
+    room: str = typer.Option(..., "--room", help="Room to inspect."),
+    name: str = typer.Option(..., "--name", help="Agent whose unread cursor is counted."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Count unread messages without marking them read."""
+    typer.echo(render_unread_count(count_unread(room, name, storage_home()), as_json=json_output))
 
 
 @app.command("read")

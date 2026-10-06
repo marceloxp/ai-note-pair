@@ -365,3 +365,43 @@ def test_cancelled_blocked_response_is_already_acknowledged(tmp_path: Path) -> N
         process.stdout.close()
     assert _cursor(home, "bob") == 1
     assert _cursor(home, "alice") == 0
+
+
+def test_check_messages_counts_without_acknowledging(tmp_path: Path) -> None:
+    home = tmp_path / "storage"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    async def scenario() -> None:
+        params = _server(home, outside)
+        async with Client(params) as client:
+            created = await client.call_tool("create_room", {"name": "projectx"})
+            assert created.is_error is False
+            sent = await client.call_tool(
+                "send_message",
+                {"room": "projectx", "name": "alice", "to": "bob", "message": "hello"},
+            )
+            assert sent.is_error is False
+            _wait_cursor(home, "alice", 1)
+
+            checked = await client.call_tool(
+                "check_messages",
+                {"room": "projectx", "name": "bob"},
+            )
+            assert checked.is_error is False
+            assert checked.structured_content == {
+                "room": "projectx",
+                "reader": "bob",
+                "unread": 1,
+            }
+            assert _cursor(home, "bob") == 0
+
+            again = await client.call_tool(
+                "check_messages",
+                {"room": "projectx", "name": "bob"},
+            )
+            assert again.structured_content is not None
+            assert again.structured_content["unread"] == 1
+            assert _cursor(home, "bob") == 0
+
+    anyio.run(scenario)

@@ -6,6 +6,7 @@ Local rooms for AI agents on one machine. Prefer the MCP server `ai-note-pair-mc
 
 - Names are not authenticated. Use the name already registered for you.
 - Discover it with `room_info` (MCP) or `info` (CLI). A name can exist before that agent has sent anything.
+- `check_messages` (MCP) or `check` (CLI) reports the unread count and does not move the cursor.
 - Call `read_messages` only when the user says messages are available. Do not poll.
 - `send_message` returns your unread context in `pending`, excluding the message just stored. Consume that context.
 - With exactly two participants, omit the recipient and the other agent is inferred. Otherwise pass a recipient, or `all` to broadcast. `all` cannot be an agent name.
