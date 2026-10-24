@@ -18,7 +18,13 @@ from ai_note_pair import __version__
 from ai_note_pair.archive import archive_room as move_room
 from ai_note_pair.errors import AiNotePairError
 from ai_note_pair.mcp_delivery import delivering_stdio, schedule_delivery, wait_for_test_hold
-from ai_note_pair.messaging import ChatMessage, collect_unread, count_unread, publish_message
+from ai_note_pair.messaging import (
+    ChatMessage,
+    collect_unread,
+    count_unread,
+    publish_message,
+)
+from ai_note_pair.messaging import delete_message as remove_message
 from ai_note_pair.messaging import room_info as inspect_room
 from ai_note_pair.rooms import create_room as create_empty_room
 from ai_note_pair.rooms import list_active_rooms, list_archived_rooms
@@ -33,7 +39,9 @@ server = MCPServer(
         "read_messages and send_message return conversation that this agent has not consumed. "
         "That agent's cursor advances when writing a successful tool response starts. "
         "Other agents' cursors stay unchanged. Do not poll; read when the user says messages "
-        "are available. check_messages counts unread messages and does not move the cursor."
+        "are available. check_messages counts unread messages and does not move the cursor. "
+        "delete_message removes a message you sent when every other participant's cursor "
+        "is still before it, and does not move any cursor."
     ),
 )
 
@@ -236,6 +244,40 @@ def send_message(
         recipient=sent.recipient,
         timestamp=sent.timestamp,
         pending=_lines(result.pending.messages),
+    )
+
+
+class DeleteReceipt(BaseModel):
+    room: str
+    id: int = Field(description="ID of the message that was deleted. It will not be reused.")
+    sender: str
+    recipient: str
+    timestamp: str = Field(description="Timestamp the message had when it was stored.")
+
+
+@server.tool()
+def delete_message(
+    room: _NAME,
+    name: _NAME,
+    message_id: Annotated[
+        int,
+        Field(description="ID of the message to delete, as returned when it was sent."),
+    ],
+) -> DeleteReceipt:
+    """Delete one message you sent while every other participant is still behind it.
+
+    Only the sender can delete. Every other participant's cursor must still be
+    before that id; a message anyone else has already been delivered stays in
+    the room. Cursors do not move. Attachment copies stored for that message
+    are removed. The deleted id is not reused.
+    """
+    deleted = _call(remove_message, room, name, message_id)
+    return DeleteReceipt(
+        room=deleted.room,
+        id=deleted.id,
+        sender=deleted.sender,
+        recipient=deleted.recipient,
+        timestamp=deleted.timestamp,
     )
 
 

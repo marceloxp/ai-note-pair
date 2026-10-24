@@ -88,6 +88,15 @@ class UnreadCount:
     unread: int
 
 
+@dataclass(frozen=True)
+class DeletedMessage:
+    room: str
+    id: int
+    sender: str
+    recipient: str
+    timestamp: str
+
+
 def validate_agent_name(name: str, *, role: str) -> str:
     """Reject blank, unsafe, or reserved agent names."""
     if name == BROADCAST or not _AGENT_NAME.fullmatch(name):
@@ -180,15 +189,15 @@ def send_message(
                 _ensure_agent(connection, resolved)
             timestamp = utc_now()
             stored_attachments = "[]" if not attachment_paths else _encode_paths(attachment_paths)
-            cursor = connection.execute(
+            message_id = _allocate_message_id(connection)
+            connection.execute(
                 """
                 INSERT INTO messages (
-                    timestamp, sender_name, recipient_name, content, attachment_paths
-                ) VALUES (?, ?, ?, ?, ?)
+                    id, timestamp, sender_name, recipient_name, content, attachment_paths
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (timestamp, sender, resolved, content, stored_attachments),
+                (message_id, timestamp, sender, resolved, content, stored_attachments),
             )
-            message_id = int(cursor.lastrowid)
             connection.execute(
                 "UPDATE metadata SET value = ? WHERE key = 'updated_at'",
                 (timestamp,),
@@ -342,6 +351,90 @@ def acknowledge_read(batch: UnreadBatch, home: Path | None = None) -> None:
             raise _database_failure(exc) from exc
     finally:
         connection.close()
+
+
+def delete_message(
+    room: str,
+    sender: str,
+    message_id: int,
+    home: Path | None = None,
+) -> DeletedMessage:
+    """Remove one message this sender stored while every other cursor is still behind it."""
+    validate_agent_name(sender, role="sender")
+    if type(message_id) is not int or message_id < 1:
+        raise AiNotePairError(f"Invalid message id {message_id!r}.")
+
+    room_path = room_directory(room, home)
+    with exclusive_room(room_path):
+        database = _require_database(room, home)
+        connection = _open_room(database)
+        try:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    """
+                    SELECT id, timestamp, sender_name, recipient_name, attachment_paths
+                    FROM messages
+                    WHERE id = ?
+                    """,
+                    (message_id,),
+                ).fetchone()
+                if row is None:
+                    raise AiNotePairError(f"Message {message_id} does not exist in room {room!r}.")
+                owner = str(row["sender_name"])
+                if owner != sender:
+                    raise AiNotePairError(
+                        "Only the sender can delete a message. "
+                        f"Message {message_id} was sent by {owner!r}."
+                    )
+                readers = connection.execute(
+                    """
+                    SELECT name FROM agents
+                    WHERE name != ? AND last_read_message_id >= ?
+                    ORDER BY name
+                    """,
+                    (sender, message_id),
+                ).fetchall()
+                if readers:
+                    shown = ", ".join(repr(str(item["name"])) for item in readers)
+                    raise AiNotePairError(
+                        f"Message {message_id} has already been read by {shown}. "
+                        "Only a message still unread by every other participant can be deleted."
+                    )
+                attachments = _attachment_paths(row)
+                recipient = str(row["recipient_name"])
+                sent_at = str(row["timestamp"])
+                _ensure_next_message_id(connection)
+                deleted_at = utc_now()
+                connection.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+                connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'updated_at'",
+                    (deleted_at,),
+                )
+                connection.commit()
+            except AiNotePairError:
+                _rollback(connection)
+                raise
+            except sqlite3.Error as exc:
+                _rollback(connection)
+                raise _database_failure(exc) from exc
+        finally:
+            connection.close()
+        try:
+            discard_attachments(room_path, list(attachments))
+        except OSError as exc:
+            raise AiNotePairError(
+                f"Message {message_id} was deleted, but an attachment could not be removed: "
+                f"{exc.strerror or exc}"
+            ) from exc
+
+    return DeletedMessage(
+        room=room,
+        id=message_id,
+        sender=sender,
+        recipient=recipient,
+        timestamp=sent_at,
+    )
 
 
 def room_info(room: str, home: Path | None = None) -> RoomInfo:
@@ -515,6 +608,42 @@ def _open_room(database: Path) -> sqlite3.Connection:
     return connection
 
 
+def _allocate_message_id(connection: sqlite3.Connection) -> int:
+    """Return a fresh message id and remember the one after it."""
+    message_id = _ensure_next_message_id(connection)
+    _store_next_message_id(connection, message_id + 1)
+    return message_id
+
+
+def _ensure_next_message_id(connection: sqlite3.Connection) -> int:
+    """Persist the next id at or above the current maximum so a delete cannot reuse one."""
+    highest = int(connection.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0])
+    row = connection.execute("SELECT value FROM metadata WHERE key = 'next_message_id'").fetchone()
+    if row is None:
+        nxt = highest + 1
+    else:
+        try:
+            nxt = int(row["value"])
+        except ValueError as exc:
+            raise AiNotePairError("Room metadata has an invalid next_message_id.") from exc
+        if nxt <= highest:
+            nxt = highest + 1
+    if nxt < 1:
+        raise AiNotePairError("Room metadata has an invalid next_message_id.")
+    _store_next_message_id(connection, nxt)
+    return nxt
+
+
+def _store_next_message_id(connection: sqlite3.Connection, nxt: int) -> None:
+    connection.execute(
+        """
+        INSERT INTO metadata (key, value) VALUES ('next_message_id', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(nxt),),
+    )
+
+
 def _metadata(connection: sqlite3.Connection, key: str) -> str:
     row = connection.execute(
         "SELECT value FROM metadata WHERE key = ?",
@@ -549,6 +678,17 @@ def _encode_paths(paths: list[str]) -> str:
 
 
 def _chat_message(row: sqlite3.Row) -> ChatMessage:
+    return ChatMessage(
+        id=int(row["id"]),
+        timestamp=str(row["timestamp"]),
+        sender=str(row["sender_name"]),
+        recipient=str(row["recipient_name"]),
+        content=str(row["content"]),
+        attachments=_attachment_paths(row),
+    )
+
+
+def _attachment_paths(row: sqlite3.Row) -> tuple[str, ...]:
     raw_paths = row["attachment_paths"]
     try:
         parsed = json.loads(raw_paths)
@@ -556,11 +696,4 @@ def _chat_message(row: sqlite3.Row) -> ChatMessage:
         raise AiNotePairError(f"Message {row['id']} has unreadable attachment metadata.") from exc
     if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
         raise AiNotePairError(f"Message {row['id']} has unreadable attachment metadata.")
-    return ChatMessage(
-        id=int(row["id"]),
-        timestamp=str(row["timestamp"]),
-        sender=str(row["sender_name"]),
-        recipient=str(row["recipient_name"]),
-        content=str(row["content"]),
-        attachments=tuple(parsed),
-    )
+    return tuple(parsed)

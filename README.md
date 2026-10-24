@@ -39,7 +39,7 @@ This repository does not edit client settings. Formats differ; one common shape 
 }
 ```
 
-Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `check_messages`, `send_message`, `read_messages`, and `archive_room`.
+Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `check_messages`, `send_message`, `delete_message`, `read_messages`, and `archive_room`.
 
 Call `room_info` to discover your registered name. `check_messages` counts unread messages and does not move the cursor. Call `read_messages` when the user says messages are available; do not poll. Consume `pending` from `send_message`. MCP advances only that agent's cursor when writing a successful response starts. Interrupted output remains marked read. Errors or cancellation before writing starts leave messages pending. Retrying a committed send can create a duplicate.
 
@@ -69,6 +69,15 @@ Repeat `--attachment <path>` to copy files into the room. Stored references look
 
 A successful send marks the new message read by its author. If that author still had unread messages, they are printed with the confirmation, including notes addressed to someone else and broadcasts. JSON lists those messages in `pending` and does not repeat the message just sent. The cursor moves only after that output is written, and only through the new message id, so anything that arrives later stays unread. The other agents' cursors do not move. A failed send leaves unread messages in place. If the confirmation cannot be written, the cursor stays where it was.
 
+## Delete an unread message
+
+The sender can remove a message while every other participant's cursor is still before that id. The sender's own cursor does not count. Cursors stay put, attachment copies for that message are removed, and the id is not reused. Once anyone else has been delivered the message, it stays.
+
+```bash
+ai-note-pair delete-message --room projectx --name alice --id 2
+ai-note-pair delete-message --room projectx --name alice --id 2 --json
+```
+
 ## Recipients
 
 - With exactly two participants, `--to` may be omitted and the message goes to the other agent.
@@ -96,7 +105,7 @@ ai-note-pair read --room projectx --name alice --json
 
 The first read returns every message already in the room. A later read returns only newer ids. An empty read leaves the cursor unchanged. The cursor moves only after the command has written its output; if that output fails, the next read returns the same messages. After a successful read or send, this version has no replay command.
 
-Add `--json` to `info`, `check`, `send`, and `read` for machine-readable output. Errors go to stderr with a non-zero exit code and leave stdout empty.
+Add `--json` to `info`, `check`, `send`, `delete-message`, and `read` for machine-readable output. Errors go to stderr with a non-zero exit code and leave stdout empty.
 
 ## Archive
 

@@ -1,6 +1,6 @@
 # ai-note-pair — Agent Usage
 
-Use MCP when the server is available. After `uv tool install --editable ./src`, run `ai-note-pair-mcp --help` and set the client `command` to the `Executable:` path it prints. A configuration example is in [README.md](README.md), and each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `check_messages`, `send_message`, `read_messages`, `archive_room`. Discover your registered name with `room_info`. `check_messages` reports the unread count and does not move the cursor. Call `read_messages` when the user says messages are available; do not poll. Consume the `pending` messages from `send_message`. Pass the text as `message` (no stdin or message-file). Attachment arguments are local paths; results look like `attachments/notes.txt`, resolved against `path` from `room_info`.
+Use MCP when the server is available. After `uv tool install --editable ./src`, run `ai-note-pair-mcp --help` and set the client `command` to the `Executable:` path it prints. A configuration example is in [README.md](README.md), and each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `check_messages`, `send_message`, `delete_message`, `read_messages`, `archive_room`. Discover your registered name with `room_info`. `check_messages` reports the unread count and does not move the cursor. Call `read_messages` when the user says messages are available; do not poll. Consume the `pending` messages from `send_message`. Pass the text as `message` (no stdin or message-file). Attachment arguments are local paths; results look like `attachments/notes.txt`, resolved against `path` from `room_info`.
 
 The CLI below is the same storage when MCP is not available. Run `ai-note-pair` from any directory. Every participant uses `~/.config/ai-note-pair/`, or the directory in `AI_NOTE_PAIR_HOME`.
 
@@ -12,11 +12,12 @@ The CLI below is the same storage when MCP is not available. Run `ai-note-pair` 
 | Inspect | `info --room ROOM [--json]` | Shows the room path, dates, participants, and message counts without consuming messages. |
 | Check | `check --room ROOM --name AGENT [--json]` | Counts messages after that agent's cursor without marking them read. |
 | Send | `send --room ROOM --name AGENT [--to RECIPIENT] --message TEXT [--json]` | Confirms the send and returns pending conversation for the sender. |
+| Delete | `delete-message --room ROOM --name AGENT --id ID [--json]` | Removes that sender's message when every other participant's cursor is still before it. |
 | Read | `read --room ROOM --name AGENT [--json]` | Returns new conversation messages and marks them read for that agent. |
 | Archive | `archive --room ROOM` | Archives the room with a UTC timestamp suffix, preserving its data and freeing the name. |
 | List | `list-rooms [--archived]` | Lists sorted room names, one per line; an empty list produces no output. |
 
-Prefix each command with `ai-note-pair`. Use `ai-note-pair COMMAND --help` for options. `--json` is supported by `info`, `check`, `send`, and `read`.
+Prefix each command with `ai-note-pair`. Use `ai-note-pair COMMAND --help` for options. `--json` is supported by `info`, `check`, `send`, `delete-message`, and `read`.
 
 MCP marks the captured conversation read when writing a successful response starts, even if output is later interrupted. Errors or cancellation before writing starts leave it pending. CLI commands acknowledge after successful output.
 
@@ -82,6 +83,7 @@ All agents read the shared conversation, including messages addressed to other p
 - Example: you read through `4`, messages `5` and `6` arrive, and you send `7`. The send response delivers `5` and `6` and marks you current through `7`.
 - Messages arriving after the response's captured range remain pending. Other agents' cursors are unchanged.
 - Failed output does not advance your cursor. A successful read is not replayable; concurrent reads under one name may overlap.
+- `delete-message` removes one message you sent, and its attachment copies, when every other participant's cursor is still before that id. Your own cursor does not count as a read. Cursors stay where they are, and the id is not reused. A message someone else has already received is left in place. The check uses the stored cursors, so a delivery that has not acknowledged yet can still remove a message that response already included.
 
 ## JSON Responses
 
@@ -116,6 +118,8 @@ All agents read the shared conversation, including messages addressed to other p
 No pending content produces an empty array. Without `--json`, output is readable text; an empty `read` prints `No unread messages.`
 
 `check` returns `room`, `reader`, and `unread`. Without `--json`, it prints `N unread messages.` (`1 unread message.` when the count is one).
+
+`delete-message` returns `room`, `id`, `sender`, `recipient`, and the message's original `timestamp`. Without `--json`, it prints `Deleted message ID in room 'ROOM' from 'SENDER' to 'RECIPIENT'.`
 
 ## Errors and Archiving
 

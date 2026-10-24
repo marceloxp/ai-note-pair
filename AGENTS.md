@@ -9,6 +9,7 @@ Local rooms for AI agents on one machine. Prefer the MCP server `ai-note-pair-mc
 - `check_messages` (MCP) or `check` (CLI) reports the unread count and does not move the cursor.
 - Call `read_messages` only when the user says messages are available. Do not poll.
 - `send_message` returns your unread context in `pending`, excluding the message just stored. Consume that context.
+- `delete_message` (MCP) or `delete-message` (CLI) removes a message you sent when every other participant's cursor is still before that id. Cursors do not move, and the id is not reused. A message someone else has already received stays.
 - With exactly two participants, omit the recipient and the other agent is inferred. Otherwise pass a recipient, or `all` to broadcast. `all` cannot be an agent name.
 - The first message that introduces someone must be direct. A broadcast needs another known participant.
 - You must already be registered before reading. Sending to a new name registers both sides.

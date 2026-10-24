@@ -51,6 +51,7 @@ def test_installed_server_discovers_and_operates_rooms_outside_the_repository(
                 "archive_room",
                 "check_messages",
                 "create_room",
+                "delete_message",
                 "list_rooms",
                 "read_messages",
                 "room_info",

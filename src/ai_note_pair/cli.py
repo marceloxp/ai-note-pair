@@ -16,11 +16,13 @@ from ai_note_pair.messaging import (
     acknowledge_read,
     collect_unread,
     count_unread,
+    delete_message,
     load_message_content,
     publish_message,
     room_info,
 )
 from ai_note_pair.presentation import (
+    render_deleted_message,
     render_room_info,
     render_sent_message,
     render_unread,
@@ -141,6 +143,19 @@ def send_command(
         render_sent_message(delivery.sent, as_json=json_output, pending=delivery.pending.messages)
     )
     acknowledge_read(delivery.pending, storage_home())
+
+
+@app.command("delete-message")
+@_guard
+def delete_message_command(
+    room: str = typer.Option(..., "--room", help="Room that holds the message."),
+    name: str = typer.Option(..., "--name", help="Sender agent name."),
+    message_id: int = typer.Option(..., "--id", help="ID of the message to delete."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Delete a message you sent that no other participant has read."""
+    deleted = delete_message(room, name, message_id, storage_home())
+    typer.echo(render_deleted_message(deleted, as_json=json_output))
 
 
 @app.command("check")

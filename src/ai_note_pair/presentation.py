@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import json
 
-from ai_note_pair.messaging import ChatMessage, RoomInfo, SentMessage, UnreadBatch, UnreadCount
+from ai_note_pair.messaging import (
+    ChatMessage,
+    DeletedMessage,
+    RoomInfo,
+    SentMessage,
+    UnreadBatch,
+    UnreadCount,
+)
 
 
 def render_room_info(info: RoomInfo, *, as_json: bool) -> str:
@@ -60,6 +67,22 @@ def render_sent_message(
     if not pending:
         return confirmation
     return f"{confirmation}\n\n{_render_message_blocks(pending)}"
+
+
+def render_deleted_message(message: DeletedMessage, *, as_json: bool) -> str:
+    if as_json:
+        payload = {
+            "room": message.room,
+            "id": message.id,
+            "sender": message.sender,
+            "recipient": message.recipient,
+            "timestamp": message.timestamp,
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    return (
+        f"Deleted message {message.id} in room {message.room!r} "
+        f"from {message.sender!r} to {message.recipient!r}."
+    )
 
 
 def render_unread(batch: UnreadBatch, *, as_json: bool) -> str:
