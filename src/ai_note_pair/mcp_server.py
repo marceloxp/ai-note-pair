@@ -19,12 +19,17 @@ from ai_note_pair.archive import archive_room as move_room
 from ai_note_pair.errors import AiNotePairError
 from ai_note_pair.mcp_delivery import delivering_stdio, schedule_delivery, wait_for_test_hold
 from ai_note_pair.messaging import (
+    LARGE_UNREAD_CHARACTER_COUNT,
+    LARGE_UNREAD_MESSAGE_COUNT,
     ChatMessage,
+    choice_notice,
     collect_unread,
     count_unread,
     publish_message,
 )
 from ai_note_pair.messaging import delete_message as remove_message
+from ai_note_pair.messaging import join_room as enter_room
+from ai_note_pair.messaging import mark_read as skip_unread
 from ai_note_pair.messaging import room_info as inspect_room
 from ai_note_pair.rooms import create_room as create_empty_room
 from ai_note_pair.rooms import list_active_rooms, list_archived_rooms
@@ -41,7 +46,11 @@ server = MCPServer(
         "Other agents' cursors stay unchanged. Do not poll; read when the user says messages "
         "are available. check_messages counts unread messages and does not move the cursor. "
         "delete_message removes a message you sent when every other participant's cursor "
-        "is still before it, and does not move any cursor."
+        "is still before it, and does not move any cursor. "
+        "join_room registers you without reading history. "
+        f"read_messages withholds a backlog of more than {LARGE_UNREAD_MESSAGE_COUNT} messages "
+        f"or {LARGE_UNREAD_CHARACTER_COUNT} characters, without moving the cursor. "
+        "Then call mark_read to continue from here, or read_messages with read_all true."
     ),
 )
 
@@ -184,8 +193,17 @@ class SendReceipt(BaseModel):
 class ReadBatch(BaseModel):
     room: str
     reader: str
+    unread: int = Field(description="Messages after this agent's cursor.")
+    characters: int = Field(description="Characters of unread message text.")
+    choice_required: bool = Field(
+        description=(
+            "True when the backlog was withheld. messages is empty and the cursor "
+            "did not move. Call mark_read, or call read_messages again with read_all true."
+        )
+    )
+    notice: str = Field(description="Empty unless choice_required is true.")
     messages: list[ChatLine] = Field(
-        description="Conversation after this agent's cursor, in ID order."
+        description="Conversation after this agent's cursor, in ID order. Empty when withheld."
     )
 
 
@@ -281,6 +299,46 @@ def delete_message(
     )
 
 
+class JoinReceipt(BaseModel):
+    room: str
+    name: str
+    joined: bool = Field(description="False when this name was already a participant.")
+
+
+@server.tool()
+def join_room(room: _NAME, name: _NAME) -> JoinReceipt:
+    """Register in a room without sending a message or reading its history.
+
+    The cursor stays where it is. A new participant starts at the beginning, so
+    earlier messages remain unread. Joining again leaves that cursor unchanged.
+    """
+    joined = _call(enter_room, room, name)
+    return JoinReceipt(room=joined.room, name=joined.name, joined=joined.joined)
+
+
+class MarkedReadReceipt(BaseModel):
+    room: str
+    reader: str
+    marked_through: int = Field(description="Cursor position after this call.")
+    skipped: int = Field(description="Messages marked read without being returned.")
+
+
+@server.tool()
+def mark_read(room: _NAME, name: _NAME) -> MarkedReadReceipt:
+    """Mark every message that exists now as read without returning them.
+
+    The cursor advances to the latest id at this moment. Messages that arrive
+    later stay unread. An agent who is already current stays where they are.
+    """
+    marked = _call(skip_unread, room, name)
+    return MarkedReadReceipt(
+        room=marked.room,
+        reader=marked.reader,
+        marked_through=marked.marked_through,
+        skipped=marked.skipped,
+    )
+
+
 class UnreadStatus(BaseModel):
     room: str
     reader: str
@@ -299,20 +357,48 @@ def check_messages(room: _NAME, name: _NAME) -> UnreadStatus:
 
 
 @server.tool()
-def read_messages(room: _NAME, name: _NAME, ctx: Context) -> ReadBatch:
+def read_messages(
+    room: _NAME,
+    name: _NAME,
+    ctx: Context,
+    read_all: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return the full backlog even if it exceeds "
+                f"{LARGE_UNREAD_MESSAGE_COUNT} messages or "
+                f"{LARGE_UNREAD_CHARACTER_COUNT} characters."
+            )
+        ),
+    ] = False,
+) -> ReadBatch:
     """Return unread conversation and acknowledge when response writing starts.
 
     Call this when the user says messages are available. Do not poll. Every
-    message after the cursor is included, whoever it addresses. An empty result
-    does not move the cursor. When writing a successful response starts, only
-    this agent's cursor advances to the last returned ID. Later arrivals stay
-    unread. Errors or cancellation before writing starts leave messages pending.
-    Interrupted output after writing starts remains acknowledged.
+    message after the cursor is included, whoever it addresses, unless the
+    backlog is more than 20 messages or 12000 characters. Then choice_required
+    is true, messages is empty, and the cursor does not move. Call mark_read
+    to continue from here, or call again with read_all true to receive the
+    backlog. An empty result does not move the cursor. When writing a successful
+    response that returns messages starts, only this agent's cursor advances to
+    the last returned ID. Later arrivals stay unread. Errors or cancellation
+    before writing starts leave messages pending. Interrupted output after
+    writing starts remains acknowledged.
     """
-    batch = _call(collect_unread, room, name)
-    schedule_delivery(ctx.request_id, batch)
+    batch = _call(collect_unread, room, name, None, read_all)
+    if not batch.choice_required:
+        schedule_delivery(ctx.request_id, batch)
     wait_for_test_hold()
-    return ReadBatch(room=batch.room, reader=batch.reader, messages=_lines(batch.messages))
+    notice = choice_notice(batch.unread_count, batch.characters) if batch.choice_required else ""
+    return ReadBatch(
+        room=batch.room,
+        reader=batch.reader,
+        unread=batch.unread_count,
+        characters=batch.characters,
+        choice_required=batch.choice_required,
+        notice=notice,
+        messages=_lines(batch.messages),
+    )
 
 
 def main() -> None:

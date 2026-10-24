@@ -7,10 +7,13 @@ import json
 from ai_note_pair.messaging import (
     ChatMessage,
     DeletedMessage,
+    JoinedAgent,
+    MarkedRead,
     RoomInfo,
     SentMessage,
     UnreadBatch,
     UnreadCount,
+    choice_notice,
 )
 
 
@@ -85,14 +88,51 @@ def render_deleted_message(message: DeletedMessage, *, as_json: bool) -> str:
     )
 
 
+def render_joined(joined: JoinedAgent, *, as_json: bool) -> str:
+    if as_json:
+        payload = {"room": joined.room, "name": joined.name, "joined": joined.joined}
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    if joined.joined:
+        return f"Joined room {joined.room!r} as {joined.name!r}."
+    return f"Agent {joined.name!r} is already in room {joined.room!r}."
+
+
+def render_marked_read(marked: MarkedRead, *, as_json: bool) -> str:
+    if as_json:
+        payload = {
+            "room": marked.room,
+            "reader": marked.reader,
+            "marked_through": marked.marked_through,
+            "skipped": marked.skipped,
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    if marked.skipped == 0:
+        return "No unread messages."
+    if marked.skipped == 1:
+        skipped = "1 message"
+    else:
+        skipped = f"{marked.skipped} messages"
+    return (
+        f"Marked {skipped} read for {marked.reader!r} in room {marked.room!r} "
+        f"through message {marked.marked_through}."
+    )
+
+
 def render_unread(batch: UnreadBatch, *, as_json: bool) -> str:
+    notice = choice_notice(batch.unread_count, batch.characters) if batch.choice_required else ""
     if as_json:
         payload = {
             "room": batch.room,
             "reader": batch.reader,
+            "unread": batch.unread_count,
+            "characters": batch.characters,
+            "choice_required": batch.choice_required,
+            "notice": notice,
             "messages": [_message_payload(message) for message in batch.messages],
         }
         return json.dumps(payload, indent=2, ensure_ascii=False)
+    if batch.choice_required:
+        return notice
     if not batch.messages:
         return "No unread messages."
     return _render_message_blocks(batch.messages)

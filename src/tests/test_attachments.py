@@ -142,7 +142,17 @@ def test_large_unicode_message_is_not_truncated(
         cli_env,
     )
     assert sent.exit_code == 0, sent.stderr
-    read = _invoke(runner, ["read", "--room", "projectx", "--name", "bob", "--json"], cli_env)
+    withheld = _invoke(runner, ["read", "--room", "projectx", "--name", "bob", "--json"], cli_env)
+    assert withheld.exit_code == 0, withheld.stderr
+    withheld_payload = json.loads(withheld.stdout)
+    assert withheld_payload["choice_required"] is True
+    assert withheld_payload["messages"] == []
+    assert withheld_payload["characters"] == len(body)
+    read = _invoke(
+        runner,
+        ["read", "--room", "projectx", "--name", "bob", "--all", "--json"],
+        cli_env,
+    )
     assert read.exit_code == 0, read.stderr
     content = json.loads(read.stdout)["messages"][0]["content"]
     assert len(content) == len(body)

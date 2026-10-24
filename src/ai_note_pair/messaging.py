@@ -23,6 +23,8 @@ from ai_note_pair.storage import (
 )
 
 BROADCAST = "all"
+LARGE_UNREAD_MESSAGE_COUNT = 20
+LARGE_UNREAD_CHARACTER_COUNT = 12_000
 _AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
@@ -73,6 +75,9 @@ class UnreadBatch:
     previous_cursor: int
     messages: tuple[ChatMessage, ...]
     delivered_id: int
+    unread_count: int = 0
+    characters: int = 0
+    choice_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,21 @@ class DeletedMessage:
     timestamp: str
 
 
+@dataclass(frozen=True)
+class JoinedAgent:
+    room: str
+    name: str
+    joined: bool
+
+
+@dataclass(frozen=True)
+class MarkedRead:
+    room: str
+    reader: str
+    marked_through: int
+    skipped: int
+
+
 def validate_agent_name(name: str, *, role: str) -> str:
     """Reject blank, unsafe, or reserved agent names."""
     if name == BROADCAST or not _AGENT_NAME.fullmatch(name):
@@ -105,6 +125,27 @@ def validate_agent_name(name: str, *, role: str) -> str:
             "starting with a letter or digit. The name 'all' is reserved for broadcasts."
         )
     return name
+
+
+def unread_needs_choice(message_count: int, characters: int) -> bool:
+    """A backlog is large when it has too many messages or too much text."""
+    return message_count > LARGE_UNREAD_MESSAGE_COUNT or characters > LARGE_UNREAD_CHARACTER_COUNT
+
+
+def choice_notice(unread: int, characters: int) -> str:
+    """Explain a withheld read and the two ways to continue."""
+    if unread == 1:
+        message_label = "1 unread message"
+    else:
+        message_label = f"{unread} unread messages"
+    if characters == 1:
+        character_label = "1 character"
+    else:
+        character_label = f"{characters} characters"
+    return (
+        f"{message_label}, {character_label}. "
+        "Nothing was marked read. Mark them read to continue from here, or read them all."
+    )
 
 
 def load_message_content(message: str | None, message_file: str | None) -> str:
@@ -210,6 +251,7 @@ def send_message(
                 ).fetchone()[0]
             )
             pending_rows = _select_messages(connection, previous, message_id, inclusive=False)
+            pending_messages = tuple(_chat_message(row) for row in pending_rows)
             connection.commit()
         except AiNotePairError:
             _rollback(connection)
@@ -234,14 +276,55 @@ def send_message(
             reader=sender,
             instance_id=instance_id,
             previous_cursor=previous,
-            messages=tuple(_chat_message(row) for row in pending_rows),
+            messages=pending_messages,
             delivered_id=message_id,
+            unread_count=len(pending_messages),
+            characters=sum(len(message.content) for message in pending_messages),
         ),
     )
 
 
-def collect_unread(room: str, reader: str, home: Path | None = None) -> UnreadBatch:
-    """Return messages after this agent's cursor without advancing it."""
+def join_room(room: str, name: str, home: Path | None = None) -> JoinedAgent:
+    """Register an agent without sending a message or moving that agent's cursor."""
+    validate_agent_name(name, role="agent")
+    database = _require_database(room, home)
+    connection = _open_room(database)
+    try:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT last_read_message_id FROM agents WHERE name = ?",
+                (name,),
+            ).fetchone()
+            _ensure_agent(connection, name)
+            if existing is None:
+                connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'updated_at'",
+                    (utc_now(),),
+                )
+            connection.commit()
+        except AiNotePairError:
+            _rollback(connection)
+            raise
+        except sqlite3.Error as exc:
+            _rollback(connection)
+            raise _database_failure(exc) from exc
+    finally:
+        connection.close()
+    return JoinedAgent(room=room, name=name, joined=existing is None)
+
+
+def collect_unread(
+    room: str,
+    reader: str,
+    home: Path | None = None,
+    read_all: bool = False,
+) -> UnreadBatch:
+    """Return messages after this agent's cursor without advancing it.
+
+    A large backlog is withheld unless read_all is set. Withholding leaves
+    delivered_id at the current cursor so acknowledgment does not move it.
+    """
     validate_agent_name(reader, role="reader")
     database = _require_database(room, home)
     connection = _open_room(database)
@@ -249,16 +332,7 @@ def collect_unread(room: str, reader: str, home: Path | None = None) -> UnreadBa
         try:
             connection.execute("BEGIN IMMEDIATE")
             instance_id = _metadata(connection, "instance_id")
-            row = connection.execute(
-                "SELECT last_read_message_id FROM agents WHERE name = ?",
-                (reader,),
-            ).fetchone()
-            if row is None:
-                raise AiNotePairError(
-                    f"Agent {reader!r} is not a participant in room {room!r}. "
-                    "Send a message that includes this name before reading."
-                )
-            previous = int(row["last_read_message_id"])
+            previous = _participant_cursor(connection, room, reader)
             upper = int(
                 connection.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
             )
@@ -272,14 +346,25 @@ def collect_unread(room: str, reader: str, home: Path | None = None) -> UnreadBa
             raise _database_failure(exc) from exc
     finally:
         connection.close()
-    messages = tuple(_chat_message(row) for row in rows)
+    unread_count = len(rows)
+    characters = sum(len(str(row["content"])) for row in rows)
+    choice_required = not read_all and unread_needs_choice(unread_count, characters)
+    if choice_required:
+        messages: tuple[ChatMessage, ...] = ()
+        delivered_id = previous
+    else:
+        messages = tuple(_chat_message(row) for row in rows)
+        delivered_id = messages[-1].id if messages else previous
     return UnreadBatch(
         room=room,
         reader=reader,
         instance_id=instance_id,
         previous_cursor=previous,
         messages=messages,
-        delivered_id=messages[-1].id if messages else previous,
+        delivered_id=delivered_id,
+        unread_count=unread_count,
+        characters=characters,
+        choice_required=choice_required,
     )
 
 
@@ -291,16 +376,7 @@ def count_unread(room: str, reader: str, home: Path | None = None) -> UnreadCoun
     try:
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT last_read_message_id FROM agents WHERE name = ?",
-                (reader,),
-            ).fetchone()
-            if row is None:
-                raise AiNotePairError(
-                    f"Agent {reader!r} is not a participant in room {room!r}. "
-                    "Send a message that includes this name before reading."
-                )
-            previous = int(row["last_read_message_id"])
+            previous = _participant_cursor(connection, room, reader)
             unread = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM messages WHERE id > ?",
@@ -317,6 +393,52 @@ def count_unread(room: str, reader: str, home: Path | None = None) -> UnreadCoun
     finally:
         connection.close()
     return UnreadCount(room=room, reader=reader, unread=unread)
+
+
+def mark_read(room: str, reader: str, home: Path | None = None) -> MarkedRead:
+    """Advance this agent's cursor to the latest message without returning any."""
+    validate_agent_name(reader, role="reader")
+    database = _require_database(room, home)
+    connection = _open_room(database)
+    try:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = _participant_cursor(connection, room, reader)
+            upper = int(
+                connection.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+            )
+            skipped = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM messages WHERE id > ? AND id <= ?",
+                    (previous, upper),
+                ).fetchone()[0]
+            )
+            marked_through = previous
+            if upper > previous:
+                marked_through = upper
+                connection.execute(
+                    """
+                    UPDATE agents
+                    SET last_read_message_id = ?, read_at = ?
+                    WHERE name = ? AND last_read_message_id < ?
+                    """,
+                    (upper, utc_now(), reader, upper),
+                )
+            connection.commit()
+        except AiNotePairError:
+            _rollback(connection)
+            raise
+        except sqlite3.Error as exc:
+            _rollback(connection)
+            raise _database_failure(exc) from exc
+    finally:
+        connection.close()
+    return MarkedRead(
+        room=room,
+        reader=reader,
+        marked_through=marked_through,
+        skipped=skipped,
+    )
 
 
 def acknowledge_read(batch: UnreadBatch, home: Path | None = None) -> None:
@@ -502,6 +624,19 @@ def _resolve_recipient(connection: sqlite3.Connection, sender: str, recipient: s
 def _participant_names(connection: sqlite3.Connection) -> set[str]:
     rows = connection.execute("SELECT name FROM agents").fetchall()
     return {str(row["name"]) for row in rows}
+
+
+def _participant_cursor(connection: sqlite3.Connection, room: str, name: str) -> int:
+    row = connection.execute(
+        "SELECT last_read_message_id FROM agents WHERE name = ?",
+        (name,),
+    ).fetchone()
+    if row is None:
+        raise AiNotePairError(
+            f"Agent {name!r} is not a participant in room {room!r}. "
+            "Join the room, or send a message that includes this name, before reading."
+        )
+    return int(row["last_read_message_id"])
 
 
 def _ensure_agent(connection: sqlite3.Connection, name: str) -> None:

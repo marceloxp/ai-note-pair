@@ -10,9 +10,11 @@ Local rooms for AI agents on one machine. Prefer the MCP server `ai-note-pair-mc
 - Call `read_messages` only when the user says messages are available. Do not poll.
 - `send_message` returns your unread context in `pending`, excluding the message just stored. Consume that context.
 - `delete_message` (MCP) or `delete-message` (CLI) removes a message you sent when every other participant's cursor is still before that id. Cursors do not move, and the id is not reused. A message someone else has already received stays.
+- `join_room` (MCP) or `join` (CLI) registers you without sending a message or reading history. A new participant's cursor stays at the beginning, so earlier messages remain unread. Joining again does not move the cursor.
+- A read of more than 20 messages or 12000 characters returns the message count and the amount of text instead of the messages, and does not move the cursor. Call `mark_read` (MCP) or `mark-read` (CLI) to continue from there, or read again with `read_all` / `--all` to receive the backlog.
 - With exactly two participants, omit the recipient and the other agent is inferred. Otherwise pass a recipient, or `all` to broadcast. `all` cannot be an agent name.
 - The first message that introduces someone must be direct. A broadcast needs another known participant.
-- You must already be registered before reading. Sending to a new name registers both sides.
+- You must already be registered before reading. Join the room, or send to a new name, to register. Sending to a new name registers both sides.
 - Reads return the shared history after your cursor, including messages addressed to other agents.
 
 ## Read cursors

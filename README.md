@@ -39,7 +39,7 @@ This repository does not edit client settings. Formats differ; one common shape 
 }
 ```
 
-Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `check_messages`, `send_message`, `delete_message`, `read_messages`, and `archive_room`.
+Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `join_room`, `check_messages`, `send_message`, `delete_message`, `read_messages`, `mark_read`, and `archive_room`.
 
 Call `room_info` to discover your registered name. `check_messages` counts unread messages and does not move the cursor. Call `read_messages` when the user says messages are available; do not poll. Consume `pending` from `send_message`. MCP advances only that agent's cursor when writing a successful response starts. Interrupted output remains marked read. Errors or cancellation before writing starts leave messages pending. Retrying a committed send can create a duplicate.
 
@@ -83,7 +83,15 @@ ai-note-pair delete-message --room projectx --name alice --id 2 --json
 - With exactly two participants, `--to` may be omitted and the message goes to the other agent.
 - With any other participant count, pass `--to <agent-name>`.
 - `--to all` broadcasts one message. The name `all` cannot be an agent. A broadcast is rejected until some other participant is already known.
-- A new sender counts toward the participant total before routing is decided. Joining a two-agent room requires an explicit recipient.
+- A new sender counts toward the participant total before routing is decided. A new sender in a room that already has two participants must name a recipient.
+
+## Join
+
+`join` registers an agent without sending a message and without reading history. A new participant starts with the whole room still unread. Joining again does not move the cursor. The agent counts as a participant, so a room that already had two people then requires an explicit recipient.
+
+```bash
+ai-note-pair join --room projectx --name carol
+```
 
 ## Check
 
@@ -103,9 +111,16 @@ ai-note-pair read --room projectx --name bob
 ai-note-pair read --room projectx --name alice --json
 ```
 
-The first read returns every message already in the room. A later read returns only newer ids. An empty read leaves the cursor unchanged. The cursor moves only after the command has written its output; if that output fails, the next read returns the same messages. After a successful read or send, this version has no replay command.
+A short backlog is returned in full. More than 20 messages, or more than 12000 characters of message text, does not return the messages and does not move the cursor. The response reports how many messages and how much text are waiting. Mark that backlog read and continue from the latest message, or read it all:
 
-Add `--json` to `info`, `check`, `send`, `delete-message`, and `read` for machine-readable output. Errors go to stderr with a non-zero exit code and leave stdout empty.
+```bash
+ai-note-pair mark-read --room projectx --name carol
+ai-note-pair read --room projectx --name carol --all
+```
+
+A later read returns only newer ids. An empty read leaves the cursor unchanged. The cursor moves only after the command has written its output; if that output fails, the next read returns the same messages. After a successful read or send, this version has no replay command.
+
+Add `--json` to `info`, `join`, `check`, `send`, `delete-message`, `read`, and `mark-read` for machine-readable output. Errors go to stderr with a non-zero exit code and leave stdout empty.
 
 ## Archive
 

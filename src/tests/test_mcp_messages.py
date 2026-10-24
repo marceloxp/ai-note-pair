@@ -337,7 +337,7 @@ def test_cancelled_blocked_response_is_already_acknowledged(tmp_path: Path) -> N
                     "method": "tools/call",
                     "params": {
                         "name": "read_messages",
-                        "arguments": {"room": "projectx", "name": "bob"},
+                        "arguments": {"room": "projectx", "name": "bob", "read_all": True},
                     },
                 }
             )

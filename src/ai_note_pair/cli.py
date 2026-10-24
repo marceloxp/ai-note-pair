@@ -17,12 +17,16 @@ from ai_note_pair.messaging import (
     collect_unread,
     count_unread,
     delete_message,
+    join_room,
     load_message_content,
+    mark_read,
     publish_message,
     room_info,
 )
 from ai_note_pair.presentation import (
     render_deleted_message,
+    render_joined,
+    render_marked_read,
     render_room_info,
     render_sent_message,
     render_unread,
@@ -158,6 +162,17 @@ def delete_message_command(
     typer.echo(render_deleted_message(deleted, as_json=json_output))
 
 
+@app.command("join")
+@_guard
+def join_command(
+    room: str = typer.Option(..., "--room", help="Room to join."),
+    name: str = typer.Option(..., "--name", help="Agent name to register."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Register in a room without sending a message or reading its history."""
+    typer.echo(render_joined(join_room(room, name, storage_home()), as_json=json_output))
+
+
 @app.command("check")
 @_guard
 def check_command(
@@ -174,9 +189,25 @@ def check_command(
 def read_command(
     room: str = typer.Option(..., "--room", help="Room to synchronize."),
     name: str = typer.Option(..., "--name", help="Agent whose unread cursor is used."),
+    read_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Return the full unread backlog even when it is large.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
 ) -> None:
     """Return conversation messages this agent has not read yet."""
-    batch = collect_unread(room, name, storage_home())
+    batch = collect_unread(room, name, storage_home(), read_all)
     typer.echo(render_unread(batch, as_json=json_output))
     acknowledge_read(batch, storage_home())
+
+
+@app.command("mark-read")
+@_guard
+def mark_read_command(
+    room: str = typer.Option(..., "--room", help="Room whose backlog should be skipped."),
+    name: str = typer.Option(..., "--name", help="Agent whose cursor moves to the latest message."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Mark the current backlog read without returning it."""
+    typer.echo(render_marked_read(mark_read(room, name, storage_home()), as_json=json_output))
