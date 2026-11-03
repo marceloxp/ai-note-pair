@@ -21,6 +21,8 @@ from ai_note_pair.mcp_delivery import delivering_stdio, schedule_delivery, wait_
 from ai_note_pair.messaging import (
     LARGE_UNREAD_CHARACTER_COUNT,
     LARGE_UNREAD_MESSAGE_COUNT,
+    RECENT_MESSAGE_DEFAULT,
+    RECENT_MESSAGE_LIMIT,
     ChatMessage,
     choice_notice,
     collect_unread,
@@ -30,6 +32,8 @@ from ai_note_pair.messaging import (
 from ai_note_pair.messaging import delete_message as remove_message
 from ai_note_pair.messaging import join_room as enter_room
 from ai_note_pair.messaging import mark_read as skip_unread
+from ai_note_pair.messaging import read_message as load_message
+from ai_note_pair.messaging import recent_messages as list_recent
 from ai_note_pair.messaging import room_info as inspect_room
 from ai_note_pair.rooms import create_room as create_empty_room
 from ai_note_pair.rooms import list_active_rooms, list_archived_rooms
@@ -45,6 +49,10 @@ server = MCPServer(
         "That agent's cursor advances when writing a successful tool response starts. "
         "Other agents' cursors stay unchanged. Do not poll; read when the user says messages "
         "are available. check_messages counts unread messages and does not move the cursor. "
+        "recent_messages returns up to 10 messages this agent has already read, plus every "
+        "participant's cursor. It does not move any cursor and does not include unread text. "
+        "read_message returns one message by id and does not move any cursor, "
+        "including when that message is still unread. "
         "delete_message removes a message you sent when every other participant's cursor "
         "is still before it, and does not move any cursor. "
         "join_room registers you without reading history. "
@@ -354,6 +362,111 @@ def check_messages(room: _NAME, name: _NAME) -> UnreadStatus:
     """
     status = _call(count_unread, room, name)
     return UnreadStatus(room=status.room, reader=status.reader, unread=status.unread)
+
+
+class AgentCursorView(BaseModel):
+    name: str = Field(description="Registered participant name.")
+    last_read_message_id: int = Field(description="Highest message id this participant has read.")
+    read_at: str | None = Field(
+        description="When this cursor last advanced. Null when it has never advanced."
+    )
+
+
+class RecentBatch(BaseModel):
+    room: str
+    reader: str
+    cursor: int = Field(description="This agent's last read message id.")
+    latest_id: int = Field(description="Highest message id in the room, or 0 when it is empty.")
+    unread: int = Field(description="Messages after this agent's cursor. Their text is omitted.")
+    limit: int = Field(description="Maximum number of read messages requested.")
+    agents: list[AgentCursorView] = Field(description="Every participant's cursor, by name.")
+    messages: list[ChatLine] = Field(
+        description=(
+            "Messages at or before this agent's cursor, oldest first. Unread text is omitted."
+        )
+    )
+
+
+@server.tool()
+def recent_messages(
+    room: _NAME,
+    name: _NAME,
+    limit: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=RECENT_MESSAGE_LIMIT,
+            description=(
+                "How many messages already at or before this cursor to return. "
+                f"From 1 to {RECENT_MESSAGE_LIMIT}. Defaults to {RECENT_MESSAGE_DEFAULT}."
+            ),
+        ),
+    ] = RECENT_MESSAGE_DEFAULT,
+) -> RecentBatch:
+    """Return messages this agent has already read, and every participant's cursor.
+
+    Does not move any cursor. Messages after this agent's cursor are counted in
+    unread and their text is omitted. Call read_messages for that text when the
+    user says messages are available.
+    """
+    shown = _call(list_recent, room, name, None, limit)
+    return RecentBatch(
+        room=shown.room,
+        reader=shown.reader,
+        cursor=shown.cursor,
+        latest_id=shown.latest_id,
+        unread=shown.unread,
+        limit=shown.limit,
+        agents=[
+            AgentCursorView(
+                name=agent.name,
+                last_read_message_id=agent.last_read_message_id,
+                read_at=agent.read_at,
+            )
+            for agent in shown.agents
+        ],
+        messages=_lines(shown.messages),
+    )
+
+
+class MessageRecord(BaseModel):
+    room: str
+    reader: str
+    id: int
+    timestamp: str
+    sender: str
+    recipient: str = Field(description="Direct recipient, or 'all' for a broadcast.")
+    content: str
+    attachments: list[str] = Field(description="Room-relative attachment paths.")
+
+
+@server.tool()
+def read_message(
+    room: _NAME,
+    name: _NAME,
+    message_id: Annotated[
+        int,
+        Field(description="ID of the message to return."),
+    ],
+) -> MessageRecord:
+    """Return one message by id without moving any cursor.
+
+    The caller must already be a participant. The message is returned whether
+    or not this agent's cursor has reached it. A message still ahead of the
+    cursor stays unread. A missing id returns an error and changes nothing.
+    """
+    stored = _call(load_message, room, name, message_id)
+    message = stored.message
+    return MessageRecord(
+        room=stored.room,
+        reader=stored.reader,
+        id=message.id,
+        timestamp=message.timestamp,
+        sender=message.sender,
+        recipient=message.recipient,
+        content=message.content,
+        attachments=list(message.attachments),
+    )
 
 
 @server.tool()

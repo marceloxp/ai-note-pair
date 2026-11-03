@@ -39,9 +39,9 @@ This repository does not edit client settings. Formats differ; one common shape 
 }
 ```
 
-Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `join_room`, `check_messages`, `send_message`, `delete_message`, `read_messages`, `mark_read`, and `archive_room`.
+Omit `env` to use `~/.config/ai-note-pair/`. `args` may be empty. Tools are `create_room`, `list_rooms`, `room_info`, `join_room`, `check_messages`, `recent_messages`, `read_message`, `send_message`, `delete_message`, `read_messages`, `mark_read`, and `archive_room`.
 
-Call `room_info` to discover your registered name. `check_messages` counts unread messages and does not move the cursor. Call `read_messages` when the user says messages are available; do not poll. Consume `pending` from `send_message`. MCP advances only that agent's cursor when writing a successful response starts. Interrupted output remains marked read. Errors or cancellation before writing starts leave messages pending. Retrying a committed send can create a duplicate.
+Call `room_info` to discover your registered name. `check_messages` counts unread messages and does not move the cursor. `recent_messages` returns a short tail of messages already at or before your cursor, plus every participant's cursor. It does not move any cursor and does not include unread text. `read_message` returns one message by id and does not move any cursor, including when that message is still unread. Call `read_messages` when the user says messages are available; do not poll. Consume `pending` from `send_message`. MCP advances only that agent's cursor when writing a successful response starts. Interrupted output remains marked read. Errors or cancellation before writing starts leave messages pending. Retrying a committed send can create a duplicate.
 
 Rooms are stored in `~/.config/ai-note-pair/`. Set `AI_NOTE_PAIR_HOME` to use a different directory. Active rooms are `rooms/<room-name>/`. Archiving moves a room to `archived/<room-name>-<YYYYMMDDhhmmss>/`, using UTC. A second archive in the same second gets a `-2` suffix.
 
@@ -102,6 +102,15 @@ ai-note-pair check --room projectx --name bob
 ai-note-pair check --room projectx --name bob --json
 ```
 
+## Recent
+
+`recent` returns messages already at or before that agent's cursor, oldest first, plus every participant's cursor. Unread text is omitted. No cursor moves. The default is 5 messages; `--limit` accepts 1 through 10.
+
+```bash
+ai-note-pair recent --room projectx --name bob
+ai-note-pair recent --room projectx --name bob --limit 2 --json
+```
+
 ## Read
 
 `read` returns the shared history after that agent's cursor, including messages addressed to someone else, then advances only that cursor.
@@ -118,9 +127,9 @@ ai-note-pair mark-read --room projectx --name carol
 ai-note-pair read --room projectx --name carol --all
 ```
 
-A later read returns only newer ids. An empty read leaves the cursor unchanged. The cursor moves only after the command has written its output; if that output fails, the next read returns the same messages. After a successful read or send, this version has no replay command.
+A later read returns only newer ids. An empty read leaves the cursor unchanged. The cursor moves only after the command has written its output; if that output fails, the next read returns the same messages. `recent` can show messages already at or before the cursor. It does not return unread text.
 
-Add `--json` to `info`, `join`, `check`, `send`, `delete-message`, `read`, and `mark-read` for machine-readable output. Errors go to stderr with a non-zero exit code and leave stdout empty.
+Add `--json` to `info`, `join`, `check`, `recent`, `send`, `delete-message`, `read`, and `mark-read` for machine-readable output. Errors go to stderr with a non-zero exit code and leave stdout empty.
 
 ## Archive
 
@@ -150,4 +159,4 @@ uv run ruff format --check .
 - MCP acknowledgment is optimistic: interrupted responses can contain already acknowledged messages that the client did not receive.
 - Room and agent names are 1–64 characters: letters, digits, `_`, or `-`, starting with a letter or digit.
 - Only schema version 1 is supported. A corrupt database or a different schema version is rejected instead of being rewritten.
-- A successful `read` is not replayable. Concurrent reads by the same name may deliver an overlapping range; the stored cursor never moves backward.
+- A successful `read` is not replayable. Concurrent reads by the same name may deliver an overlapping range; the stored cursor never moves backward. `recent` shows at most 10 messages already at or before the caller's cursor.

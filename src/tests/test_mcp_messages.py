@@ -405,3 +405,120 @@ def test_check_messages_counts_without_acknowledging(tmp_path: Path) -> None:
             assert _cursor(home, "bob") == 0
 
     anyio.run(scenario)
+
+
+def test_read_message_returns_one_message_without_acknowledging(tmp_path: Path) -> None:
+    home = tmp_path / "storage"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    async def scenario() -> None:
+        params = _server(home, outside)
+        async with Client(params) as client:
+            created = await client.call_tool("create_room", {"name": "projectx"})
+            assert created.is_error is False
+            sent = await client.call_tool(
+                "send_message",
+                {"room": "projectx", "name": "alice", "to": "bob", "message": "hello"},
+            )
+            assert sent.is_error is False
+            assert sent.structured_content is not None
+            message_id = sent.structured_content["id"]
+            _wait_cursor(home, "alice", message_id)
+
+            loaded = await client.call_tool(
+                "read_message",
+                {"room": "projectx", "name": "bob", "message_id": message_id},
+            )
+            assert loaded.is_error is False
+            assert loaded.structured_content is not None
+            assert loaded.structured_content["id"] == message_id
+            assert loaded.structured_content["reader"] == "bob"
+            assert loaded.structured_content["content"] == "hello"
+            assert loaded.structured_content["sender"] == "alice"
+            assert _cursor(home, "bob") == 0
+            assert _cursor(home, "alice") == message_id
+
+            missing = await client.call_tool(
+                "read_message",
+                {"room": "projectx", "name": "bob", "message_id": 9},
+            )
+            assert missing.is_error is True
+            assert "does not exist" in _text(missing)
+            assert _cursor(home, "bob") == 0
+
+    anyio.run(scenario)
+
+
+def test_recent_messages_returns_the_read_tail_without_acknowledging(tmp_path: Path) -> None:
+    home = tmp_path / "storage"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    async def scenario() -> None:
+        params = _server(home, outside)
+        async with Client(params) as client:
+            created = await client.call_tool("create_room", {"name": "projectx"})
+            assert created.is_error is False
+            for text in ("one", "two"):
+                sent = await client.call_tool(
+                    "send_message",
+                    {"room": "projectx", "name": "alice", "to": "bob", "message": text},
+                )
+                assert sent.is_error is False
+            _wait_cursor(home, "alice", 2)
+
+            unseen = await client.call_tool(
+                "recent_messages",
+                {"room": "projectx", "name": "bob"},
+            )
+            assert unseen.is_error is False
+            assert unseen.structured_content is not None
+            assert unseen.structured_content["cursor"] == 0
+            assert unseen.structured_content["latest_id"] == 2
+            assert unseen.structured_content["unread"] == 2
+            assert unseen.structured_content["messages"] == []
+            assert _cursor(home, "bob") == 0
+
+            read = await client.call_tool("read_messages", {"room": "projectx", "name": "bob"})
+            assert read.is_error is False
+            _wait_cursor(home, "bob", 2)
+            third = await client.call_tool(
+                "send_message",
+                {"room": "projectx", "name": "alice", "to": "bob", "message": "three"},
+            )
+            assert third.is_error is False
+            _wait_cursor(home, "alice", 3)
+            assert _cursor(home, "bob") == 2
+
+            tail = await client.call_tool(
+                "recent_messages",
+                {"room": "projectx", "name": "bob", "limit": 1},
+            )
+            assert tail.is_error is False
+            assert tail.structured_content is not None
+            assert tail.structured_content["unread"] == 1
+            assert [item["content"] for item in tail.structured_content["messages"]] == ["two"]
+            cursors = {
+                agent["name"]: agent["last_read_message_id"]
+                for agent in tail.structured_content["agents"]
+            }
+            assert cursors == {"alice": 3, "bob": 2}
+            assert _cursor(home, "bob") == 2
+            assert _cursor(home, "alice") == 3
+
+            unknown = await client.call_tool(
+                "recent_messages",
+                {"room": "projectx", "name": "carol"},
+            )
+            assert unknown.is_error is True
+            assert "not a participant" in _text(unknown)
+
+            rejected = await client.call_tool(
+                "recent_messages",
+                {"room": "projectx", "name": "bob", "limit": 11},
+            )
+            assert rejected.is_error is True
+            assert _cursor(home, "bob") == 2
+
+    anyio.run(scenario)

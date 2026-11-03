@@ -7,10 +7,12 @@ import sqlite3
 import threading
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from ai_note_pair.cli import app
-from ai_note_pair.messaging import acknowledge_read, collect_unread
+from ai_note_pair.errors import AiNotePairError
+from ai_note_pair.messaging import acknowledge_read, collect_unread, read_message, recent_messages
 from ai_note_pair.storage import DATABASE_FILENAME
 
 
@@ -263,6 +265,152 @@ def test_check_counts_unread_without_moving_the_cursor(
     alice = _check(runner, cli_env, "alice")
     assert alice.stdout.strip() == "1 unread message."
     assert _cursors(storage_home)["alice"][0] == 2
+
+
+def _recent(
+    runner: CliRunner,
+    cli_env: dict[str, str],
+    name: str,
+    *,
+    room: str = "projectx",
+    limit: int | None = None,
+    as_json: bool = False,
+):
+    args = ["recent", "--room", room, "--name", name]
+    if limit is not None:
+        args.extend(["--limit", str(limit)])
+    if as_json:
+        args.append("--json")
+    return _invoke(runner, args, cli_env)
+
+
+def test_recent_shows_the_read_tail_without_moving_cursors(
+    runner: CliRunner, storage_home: Path, cli_env: dict[str, str]
+) -> None:
+    _create(runner, cli_env)
+    _send(runner, cli_env, name="alice", message="one", to="bob")
+    _send(runner, cli_env, name="alice", message="two", to="bob")
+    _send(runner, cli_env, name="alice", message="three", to="bob")
+
+    before = _cursors(storage_home)
+    unseen = _recent(runner, cli_env, "bob")
+    assert unseen.exit_code == 0, unseen.stderr
+    assert "Unread: 3" in unseen.stdout
+    assert "No read messages." in unseen.stdout
+    assert _cursors(storage_home) == before
+
+    read = _read(runner, cli_env, "bob")
+    assert read.exit_code == 0, read.stderr
+    _send(runner, cli_env, name="alice", message="four", to="bob")
+    after_send = _cursors(storage_home)
+    assert after_send["bob"][0] == 3
+    assert after_send["alice"][0] == 4
+
+    limited = _recent(runner, cli_env, "bob", limit=2, as_json=True)
+    assert limited.exit_code == 0, limited.stderr
+    payload = json.loads(limited.stdout)
+    assert payload["cursor"] == 3
+    assert payload["latest_id"] == 4
+    assert payload["unread"] == 1
+    assert payload["limit"] == 2
+    assert [item["content"] for item in payload["messages"]] == ["two", "three"]
+    assert [agent["name"] for agent in payload["agents"]] == ["alice", "bob"]
+    bob = next(agent for agent in payload["agents"] if agent["name"] == "bob")
+    assert bob["last_read_message_id"] == 3
+    assert bob["read_at"] is not None
+    assert _cursors(storage_home) == after_send
+
+    alice = _recent(runner, cli_env, "alice", as_json=True)
+    assert [item["content"] for item in json.loads(alice.stdout)["messages"]] == [
+        "one",
+        "two",
+        "three",
+        "four",
+    ]
+    assert _cursors(storage_home) == after_send
+
+    missing = _recent(runner, cli_env, "carol")
+    assert missing.exit_code != 0
+    assert "not a participant" in missing.stderr
+    assert _cursors(storage_home) == after_send
+
+    rejected = _recent(runner, cli_env, "bob", limit=11)
+    assert rejected.exit_code != 0
+    assert _cursors(storage_home) == after_send
+
+
+def _message(
+    runner: CliRunner,
+    cli_env: dict[str, str],
+    name: str,
+    message_id: int,
+    *,
+    room: str = "projectx",
+    as_json: bool = False,
+):
+    args = ["message", "--room", room, "--name", name, "--id", str(message_id)]
+    if as_json:
+        args.append("--json")
+    return _invoke(runner, args, cli_env)
+
+
+def test_message_returns_one_message_without_moving_cursors(
+    runner: CliRunner, storage_home: Path, cli_env: dict[str, str]
+) -> None:
+    _create(runner, cli_env)
+    _send(runner, cli_env, name="alice", message="one", to="bob")
+    _send(runner, cli_env, name="alice", message="two", to="bob")
+
+    before = _cursors(storage_home)
+    unread = _message(runner, cli_env, "bob", 2, as_json=True)
+    assert unread.exit_code == 0, unread.stderr
+    payload = json.loads(unread.stdout)
+    assert payload["room"] == "projectx"
+    assert payload["reader"] == "bob"
+    assert payload["id"] == 2
+    assert payload["sender"] == "alice"
+    assert payload["recipient"] == "bob"
+    assert payload["content"] == "two"
+    assert payload["attachments"] == []
+    assert _cursors(storage_home) == before
+
+    read = _read(runner, cli_env, "bob")
+    assert read.exit_code == 0, read.stderr
+    assert "one" in read.stdout
+    assert "two" in read.stdout
+    after_read = _cursors(storage_home)
+    assert after_read["bob"][0] == 2
+
+    again = _message(runner, cli_env, "bob", 1)
+    assert again.exit_code == 0, again.stderr
+    assert "[1]" in again.stdout
+    assert "one" in again.stdout
+    assert _cursors(storage_home) == after_read
+
+    missing = _message(runner, cli_env, "bob", 9)
+    assert missing.exit_code != 0
+    assert "does not exist" in missing.stderr
+    invalid = _message(runner, cli_env, "bob", 0)
+    assert invalid.exit_code != 0
+    assert "Invalid message id" in invalid.stderr
+    stranger = _message(runner, cli_env, "carol", 1)
+    assert stranger.exit_code != 0
+    assert "not a participant" in stranger.stderr
+    assert _cursors(storage_home) == after_read
+
+
+def test_read_message_rejects_an_invalid_id() -> None:
+    with pytest.raises(AiNotePairError, match="Invalid message id True"):
+        read_message("unused", "bob", True)  # type: ignore[arg-type]
+    with pytest.raises(AiNotePairError, match="Invalid message id 0"):
+        read_message("unused", "bob", 0)
+
+
+def test_recent_limit_must_be_an_integer_from_1_to_10() -> None:
+    with pytest.raises(AiNotePairError, match="Invalid recent limit 11"):
+        recent_messages("unused", "bob", limit=11)
+    with pytest.raises(AiNotePairError, match="Invalid recent limit True"):
+        recent_messages("unused", "bob", limit=True)  # type: ignore[arg-type]
 
 
 def test_check_rejects_an_unregistered_agent(runner: CliRunner, cli_env: dict[str, str]) -> None:

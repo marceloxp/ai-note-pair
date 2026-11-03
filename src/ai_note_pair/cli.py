@@ -13,6 +13,7 @@ import typer
 from ai_note_pair.archive import archive_room
 from ai_note_pair.errors import AiNotePairError
 from ai_note_pair.messaging import (
+    RECENT_MESSAGE_LIMIT,
     acknowledge_read,
     collect_unread,
     count_unread,
@@ -21,14 +22,18 @@ from ai_note_pair.messaging import (
     load_message_content,
     mark_read,
     publish_message,
+    read_message,
+    recent_messages,
     room_info,
 )
 from ai_note_pair.presentation import (
     render_deleted_message,
     render_joined,
     render_marked_read,
+    render_recent,
     render_room_info,
     render_sent_message,
+    render_stored_message,
     render_unread,
     render_unread_count,
 )
@@ -182,6 +187,38 @@ def check_command(
 ) -> None:
     """Count unread messages without marking them read."""
     typer.echo(render_unread_count(count_unread(room, name, storage_home()), as_json=json_output))
+
+
+@app.command("recent")
+@_guard
+def recent_command(
+    room: str = typer.Option(..., "--room", help="Room to inspect."),
+    name: str = typer.Option(..., "--name", help="Agent whose read cursor limits the tail."),
+    limit: int = typer.Option(
+        5,
+        "--limit",
+        min=1,
+        max=RECENT_MESSAGE_LIMIT,
+        help="Messages already at or before this cursor to return, from 1 to 10.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Show messages this agent has already read, without moving any cursor."""
+    shown = recent_messages(room, name, storage_home(), limit)
+    typer.echo(render_recent(shown, as_json=json_output))
+
+
+@app.command("message")
+@_guard
+def message_command(
+    room: str = typer.Option(..., "--room", help="Room that holds the message."),
+    name: str = typer.Option(..., "--name", help="Registered agent requesting the message."),
+    message_id: int = typer.Option(..., "--id", help="ID of the message to return."),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Return one message by ID without moving any cursor."""
+    stored = read_message(room, name, message_id, storage_home())
+    typer.echo(render_stored_message(stored, as_json=json_output))
 
 
 @app.command("read")

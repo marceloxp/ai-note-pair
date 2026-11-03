@@ -1,6 +1,6 @@
 # ai-note-pair — Agent Usage
 
-Use MCP when the server is available. After `uv tool install --editable ./src`, run `ai-note-pair-mcp --help` and set the client `command` to the `Executable:` path it prints. A configuration example is in [README.md](README.md), and each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `join_room`, `check_messages`, `send_message`, `delete_message`, `read_messages`, `mark_read`, `archive_room`. Discover your registered name with `room_info`. `check_messages` reports the unread count and does not move the cursor. Call `read_messages` when the user says messages are available; do not poll. Consume the `pending` messages from `send_message`. Pass the text as `message` (no stdin or message-file). Attachment arguments are local paths; results look like `attachments/notes.txt`, resolved against `path` from `room_info`.
+Use MCP when the server is available. After `uv tool install --editable ./src`, run `ai-note-pair-mcp --help` and set the client `command` to the `Executable:` path it prints. A configuration example is in [README.md](README.md), and each client's settings format may differ. Tools: `create_room`, `list_rooms`, `room_info`, `join_room`, `check_messages`, `recent_messages`, `read_message`, `send_message`, `delete_message`, `read_messages`, `mark_read`, `archive_room`. Discover your registered name with `room_info`. `check_messages` reports the unread count and does not move the cursor. `recent_messages` returns up to 10 messages already at or before your cursor, plus every participant's cursor, and does not include unread text. `read_message` returns one message by id and does not move the cursor, including when that message is still unread. Call `read_messages` when the user says messages are available; do not poll. Consume the `pending` messages from `send_message`. Pass the text as `message` (no stdin or message-file). Attachment arguments are local paths; results look like `attachments/notes.txt`, resolved against `path` from `room_info`.
 
 The CLI below is the same storage when MCP is not available. Run `ai-note-pair` from any directory. Every participant uses `~/.config/ai-note-pair/`, or the directory in `AI_NOTE_PAIR_HOME`.
 
@@ -11,6 +11,8 @@ The CLI below is the same storage when MCP is not available. Run `ai-note-pair` 
 | Create | `create-room --name ROOM` | Creates an empty room; an existing name is rejected. |
 | Inspect | `info --room ROOM [--json]` | Shows the room path, dates, participants, and message counts without consuming messages. |
 | Check | `check --room ROOM --name AGENT [--json]` | Counts messages after that agent's cursor without marking them read. |
+| Recent | `recent --room ROOM --name AGENT [--limit N] [--json]` | Shows up to 10 messages already at or before that cursor, plus every cursor. Default 5. |
+| Message | `message --room ROOM --name AGENT --id ID [--json]` | Returns that message without moving any cursor. |
 | Join | `join --room ROOM --name AGENT [--json]` | Registers that agent without sending a message or moving the cursor. |
 | Send | `send --room ROOM --name AGENT [--to RECIPIENT] --message TEXT [--json]` | Confirms the send and returns pending conversation for the sender. |
 | Delete | `delete-message --room ROOM --name AGENT --id ID [--json]` | Removes that sender's message when every other participant's cursor is still before it. |
@@ -19,7 +21,7 @@ The CLI below is the same storage when MCP is not available. Run `ai-note-pair` 
 | Archive | `archive --room ROOM` | Archives the room with a UTC timestamp suffix, preserving its data and freeing the name. |
 | List | `list-rooms [--archived]` | Lists sorted room names, one per line; an empty list produces no output. |
 
-Prefix each command with `ai-note-pair`. Use `ai-note-pair COMMAND --help` for options. `--json` is supported by `info`, `join`, `check`, `send`, `delete-message`, `read`, and `mark-read`.
+Prefix each command with `ai-note-pair`. Use `ai-note-pair COMMAND --help` for options. `--json` is supported by `info`, `join`, `check`, `recent`, `message`, `send`, `delete-message`, `read`, and `mark-read`.
 
 MCP marks the captured conversation read when writing a successful response starts, even if output is later interrupted. Errors or cancellation before writing starts leave it pending. CLI commands acknowledge after successful output.
 
@@ -27,7 +29,7 @@ MCP marks the captured conversation read when writing a successful response star
 
 - Names are case-sensitive: 1–64 ASCII letters, digits, `_`, or `-`, starting with a letter or digit. The agent name `all` is reserved.
 - A successful direct send registers both sender and recipient. Reusing a name reuses that agent's identity in the room.
-- Inspect `info` to discover the name registered for you. You must be registered before using `read`.
+- Inspect `info` to discover the name registered for you. You must be registered before using `read`, `recent`, or `message`.
 - With exactly two participants, omit `--to` to address the other agent.
 - With more than two participants, specify `--to NAME` or `--to all`. A new sender counts toward that total.
 - A first message must establish another participant through a direct recipient. Broadcasts require another known participant.
@@ -81,6 +83,8 @@ All agents read the shared conversation, including messages addressed to other p
 
 - `join` registers an agent without sending or reading. A new cursor stays at the beginning. Joining an existing participant leaves that cursor where it is. A joined agent counts toward the participant total.
 - `check` returns how many messages are after your cursor. It does not mark them read, so a later `read` still returns them.
+- `recent` returns messages with an id at or before your cursor, oldest first, and every participant's cursor (`last_read_message_id` and `read_at`). The default is 5 and the maximum is 10. Unread text is omitted and no cursor moves. A new participant, whose cursor is still at the beginning, gets an empty tail.
+- `message` returns one message by id, including a message your cursor has not reached and messages addressed to other participants. No cursor moves, so a later `read` still returns a message that was ahead of the cursor.
 - `read` returns messages after your cursor in ascending ID order. A short backlog is returned in full. More than 20 messages, or more than 12000 characters of message text, produces a notice with those two amounts and leaves the cursor unchanged. `read --all` returns that backlog anyway. `mark-read` advances the cursor to the latest message that exists now, without returning the text; anything that arrives afterward stays unread.
 - `send` returns confirmation plus any conversation you have not yet read, excluding the new message itself. After successful output, your cursor includes both the returned context and your new message.
 - Example: you read through `4`, messages `5` and `6` arrive, and you send `7`. The send response delivers `5` and `6` and marks you current through `7`.
@@ -121,6 +125,10 @@ All agents read the shared conversation, including messages addressed to other p
 No pending content produces an empty array. Without `--json`, output is readable text; an empty `read` prints `No unread messages.`
 
 `check` returns `room`, `reader`, and `unread`. Without `--json`, it prints `N unread messages.` (`1 unread message.` when the count is one).
+
+`recent` returns `room`, `reader`, `cursor`, `latest_id`, `unread`, `limit`, `agents`, and `messages`. Each agent has `name`, `last_read_message_id`, and `read_at` (`null` when that cursor has never advanced). `messages` uses the same object shape as `read` and contains only messages at or before `cursor`. Without `--json`, an empty tail prints `No read messages.`
+
+`message` returns `room`, `reader`, and the same message fields as one `read` object (`id`, `timestamp`, `sender`, `recipient`, `content`, `attachments`). Without `--json`, it prints that message in the same block format as `read`.
 
 `delete-message` returns `room`, `id`, `sender`, `recipient`, and the message's original `timestamp`. Without `--json`, it prints `Deleted message ID in room 'ROOM' from 'SENDER' to 'RECIPIENT'.`
 

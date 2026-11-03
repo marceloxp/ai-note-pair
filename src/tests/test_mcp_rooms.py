@@ -55,10 +55,13 @@ def test_installed_server_discovers_and_operates_rooms_outside_the_repository(
                 "join_room",
                 "list_rooms",
                 "mark_read",
+                "read_message",
                 "read_messages",
+                "recent_messages",
                 "room_info",
                 "send_message",
             }
+            assert tools["recent_messages"].input_schema["properties"]["limit"]["default"] == 5
             assert "ctx" not in tools["send_message"].input_schema["properties"]
             assert "ctx" not in tools["read_messages"].input_schema["properties"]
             for tool in tools.values():

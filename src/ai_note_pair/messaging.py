@@ -25,6 +25,8 @@ from ai_note_pair.storage import (
 BROADCAST = "all"
 LARGE_UNREAD_MESSAGE_COUNT = 20
 LARGE_UNREAD_CHARACTER_COUNT = 12_000
+RECENT_MESSAGE_DEFAULT = 5
+RECENT_MESSAGE_LIMIT = 10
 _AGENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
@@ -91,6 +93,32 @@ class UnreadCount:
     room: str
     reader: str
     unread: int
+
+
+@dataclass(frozen=True)
+class AgentCursor:
+    name: str
+    last_read_message_id: int
+    read_at: str | None
+
+
+@dataclass(frozen=True)
+class RecentView:
+    room: str
+    reader: str
+    cursor: int
+    latest_id: int
+    unread: int
+    limit: int
+    agents: tuple[AgentCursor, ...]
+    messages: tuple[ChatMessage, ...]
+
+
+@dataclass(frozen=True)
+class StoredMessage:
+    room: str
+    reader: str
+    message: ChatMessage
 
 
 @dataclass(frozen=True)
@@ -393,6 +421,125 @@ def count_unread(room: str, reader: str, home: Path | None = None) -> UnreadCoun
     finally:
         connection.close()
     return UnreadCount(room=room, reader=reader, unread=unread)
+
+
+def recent_messages(
+    room: str,
+    reader: str,
+    home: Path | None = None,
+    limit: int = RECENT_MESSAGE_DEFAULT,
+) -> RecentView:
+    """Return messages at or before this cursor, plus every participant's cursor.
+
+    Unread text is omitted. No cursor moves.
+    """
+    validate_agent_name(reader, role="reader")
+    if type(limit) is not int or not 1 <= limit <= RECENT_MESSAGE_LIMIT:
+        raise AiNotePairError(
+            f"Invalid recent limit {limit!r}. Use an integer from 1 to {RECENT_MESSAGE_LIMIT}."
+        )
+    database = _require_database(room, home)
+    connection = _open_room(database)
+    try:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = _participant_cursor(connection, room, reader)
+            latest_id = int(
+                connection.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+            )
+            unread = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM messages WHERE id > ?",
+                    (cursor,),
+                ).fetchone()[0]
+            )
+            agent_rows = connection.execute(
+                """
+                SELECT name, last_read_message_id, read_at
+                FROM agents
+                ORDER BY name
+                """
+            ).fetchall()
+            message_rows = connection.execute(
+                """
+                SELECT id, timestamp, sender_name, recipient_name, content, attachment_paths
+                FROM messages
+                WHERE id <= ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (cursor, limit),
+            ).fetchall()
+            connection.rollback()
+        except AiNotePairError:
+            _rollback(connection)
+            raise
+        except sqlite3.Error as exc:
+            _rollback(connection)
+            raise _database_failure(exc) from exc
+    finally:
+        connection.close()
+    agents = tuple(
+        AgentCursor(
+            name=str(row["name"]),
+            last_read_message_id=int(row["last_read_message_id"]),
+            read_at=None if row["read_at"] is None else str(row["read_at"]),
+        )
+        for row in agent_rows
+    )
+    return RecentView(
+        room=room,
+        reader=reader,
+        cursor=cursor,
+        latest_id=latest_id,
+        unread=unread,
+        limit=limit,
+        agents=agents,
+        messages=tuple(_chat_message(row) for row in reversed(message_rows)),
+    )
+
+
+def read_message(
+    room: str,
+    reader: str,
+    message_id: int,
+    home: Path | None = None,
+) -> StoredMessage:
+    """Return one stored message without moving any cursor.
+
+    The message is returned whether or not this agent's cursor has reached it.
+    A later read still includes it when the cursor is behind that id.
+    """
+    validate_agent_name(reader, role="reader")
+    if type(message_id) is not int or message_id < 1:
+        raise AiNotePairError(f"Invalid message id {message_id!r}.")
+    database = _require_database(room, home)
+    connection = _open_room(database)
+    try:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            _participant_cursor(connection, room, reader)
+            row = connection.execute(
+                """
+                SELECT id, timestamp, sender_name, recipient_name, content, attachment_paths
+                FROM messages
+                WHERE id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                raise AiNotePairError(f"Message {message_id} does not exist in room {room!r}.")
+            message = _chat_message(row)
+            connection.rollback()
+        except AiNotePairError:
+            _rollback(connection)
+            raise
+        except sqlite3.Error as exc:
+            _rollback(connection)
+            raise _database_failure(exc) from exc
+    finally:
+        connection.close()
+    return StoredMessage(room=room, reader=reader, message=message)
 
 
 def mark_read(room: str, reader: str, home: Path | None = None) -> MarkedRead:

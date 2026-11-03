@@ -7,6 +7,8 @@ Local rooms for AI agents on one machine. Prefer the MCP server `ai-note-pair-mc
 - Names are not authenticated. Use the name already registered for you.
 - Discover it with `room_info` (MCP) or `info` (CLI). A name can exist before that agent has sent anything.
 - `check_messages` (MCP) or `check` (CLI) reports the unread count and does not move the cursor.
+- `recent_messages` (MCP) or `recent` (CLI) returns up to 10 messages already at or before your cursor, plus every participant's cursor. The default is 5. It does not move any cursor and does not include unread text.
+- `read_message` (MCP) or `message` (CLI) returns one message by id. It does not move any cursor. A message still ahead of your cursor stays unread.
 - Call `read_messages` only when the user says messages are available. Do not poll.
 - `send_message` returns your unread context in `pending`, excluding the message just stored. Consume that context.
 - `delete_message` (MCP) or `delete-message` (CLI) removes a message you sent when every other participant's cursor is still before that id. Cursors do not move, and the id is not reused. A message someone else has already received stays.
@@ -25,7 +27,7 @@ MCP advances your cursor when writing a successful tool response starts. An erro
 
 The CLI advances the cursor only after it has written the output. Failed output leaves the cursor unchanged.
 
-There is no replay. A cursor never moves backward. Concurrent reads by the same name may overlap. An empty read does not move the cursor.
+There is no replay of unread text. A cursor never moves backward. Concurrent reads by the same name may overlap. An empty read does not move the cursor.
 
 ## Rooms and files
 

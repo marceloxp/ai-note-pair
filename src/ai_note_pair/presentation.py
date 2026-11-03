@@ -9,8 +9,10 @@ from ai_note_pair.messaging import (
     DeletedMessage,
     JoinedAgent,
     MarkedRead,
+    RecentView,
     RoomInfo,
     SentMessage,
+    StoredMessage,
     UnreadBatch,
     UnreadCount,
     choice_notice,
@@ -136,6 +138,58 @@ def render_unread(batch: UnreadBatch, *, as_json: bool) -> str:
     if not batch.messages:
         return "No unread messages."
     return _render_message_blocks(batch.messages)
+
+
+def render_recent(batch: RecentView, *, as_json: bool) -> str:
+    if as_json:
+        payload = {
+            "room": batch.room,
+            "reader": batch.reader,
+            "cursor": batch.cursor,
+            "latest_id": batch.latest_id,
+            "unread": batch.unread,
+            "limit": batch.limit,
+            "agents": [
+                {
+                    "name": agent.name,
+                    "last_read_message_id": agent.last_read_message_id,
+                    "read_at": agent.read_at,
+                }
+                for agent in batch.agents
+            ],
+            "messages": [_message_payload(message) for message in batch.messages],
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    lines = [
+        f"Room: {batch.room}",
+        f"Reader: {batch.reader}",
+        f"Cursor: {batch.cursor}",
+        f"Latest: {batch.latest_id}",
+        f"Unread: {batch.unread}",
+        "",
+    ]
+    label_width = max([len("Agent"), *(len(agent.name) for agent in batch.agents)])
+    lines.append(f"{'Agent':<{label_width}}  Cursor  Read at")
+    for agent in batch.agents:
+        read_at = agent.read_at if agent.read_at is not None else "-"
+        lines.append(f"{agent.name:<{label_width}}  {agent.last_read_message_id:<6}  {read_at}")
+    lines.append("")
+    if batch.messages:
+        lines.append(_render_message_blocks(batch.messages))
+    else:
+        lines.append("No read messages.")
+    return "\n".join(lines)
+
+
+def render_stored_message(stored: StoredMessage, *, as_json: bool) -> str:
+    if as_json:
+        payload = {
+            "room": stored.room,
+            "reader": stored.reader,
+            **_message_payload(stored.message),
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    return _render_message_blocks((stored.message,))
 
 
 def render_unread_count(count: UnreadCount, *, as_json: bool) -> str:
